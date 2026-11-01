@@ -2,6 +2,37 @@
 
 This repository is meant to be a template for building your own custom [bootc](https://github.com/bootc-dev/bootc) image. This template is the recommended way to make customizations to any image published by the Universal Blue Project.
 
+# 中文适配 (Pixel Blue China)
+
+本镜像在 [pixel-blue](https://github.com/zhchmmx/pixel-blue)（GNOME / Fedora Silverblue 基座）之上加了两项中国大陆相关的适配。构建产物按 `build_files/modules/` 的数字顺序执行，改动都在 `system_files/` 里可以看到落点。
+
+## 中文输入法：Rime + 雾凇拼音
+
+`ibus-rime`、`librime-lua` 由镜像提供，雾凇拼音（[rime-ice](https://github.com/iDvel/rime-ice)）在构建时按固定 tag + SHA256 下载，只读地放在 `/usr/share/pixel-blue-cn/rime/`。
+
+- 默认输入源已经是 `[('xkb','us'), ('ibus','rime')]`，不用再进 设置 → 键盘 手动添加。切换快捷键沿用 GNOME 默认的 `Super+Space`。
+- 首次登录时 `pixel-blue-cn-rime-seed.service` 会把预设复制到 `~/.config/ibus/rime`。复制用 `cp -Rn`，**不会覆盖你已经改过的文件**；新增文件的时间戳是当时，librime 因此会重新编译词库，第一次切到 Rime 会停几秒。
+- 已经自己配过 `default.yaml` 的账号会保留自己的方案列表。想让出厂预设重新生效：移走 `~/.config/ibus/rime`，删掉 `~/.config/pixel-blue-cn/rime-seed.stamp`，重新登录。
+- 想关掉这个默认输入源：`gsettings reset org.gnome.desktop.input-sources sources`（gsettings 默认值只影响从没改过输入源的账号）。
+- 更新预设：改 `build_files/modules/15-rime-ice.sh` 里的 `RIME_ICE_REF` 和 `RIME_ICE_SHA256`（两者要一起改，tag 列表见上游仓库）。
+- 个人词典、同步码、用户词库不会进镜像。
+
+## Flathub 国内镜像
+
+`/etc/flatpak/remotes.d/flathub.flatpakrepo` 覆盖基座里的官方地址，默认指向上海交通大学 SJTUG 镜像（`https://mirror.sjtu.edu.cn/flathub/`），GPG 密钥与上游一致，签名校验逻辑不变。
+
+remote 的名字仍然叫 `flathub`：GNOME 软件中心和 Discover 按这个名字识别 Flathub，改名或删掉再另加一个源，点安装时会把官方源重新建回来。
+
+```bash
+flatpak remotes -d                 # 查看当前地址
+sudo flatpak remote-modify flathub --url=https://mirrors.ustc.edu.cn/flathub   # 换中科大
+sudo flatpak remote-modify flathub --url=https://dl.flathub.org/repo --title=Flathub  # 换回官方
+```
+
+几点边界，来自镜像站自己的说明：SJTUG 是智能缓存，未命中会 302 回源到 Flathub 原站，所以完全不通原站时仍可能有少量请求失败；manifest 里标注 `extra-data` 的文件（NVIDIA 驱动、JetBrains 等）不经镜像站，直接从源站下载；已经装过系统的老部署，`/var/lib/flatpak` 里记录的 remote 归属不会因此改变，`bootc switch` 到本镜像后由 `/etc` 三方合并决定是否采纳新地址。
+
+尚未提供图形化的镜像源切换入口，改源就是上面那条命令。Cloudflare WARP 与其他代理工具不在本镜像当前范围内。
+
 # Community
 
 If you have questions about this template after following the instructions, try the following spaces:
