@@ -6,7 +6,7 @@
 .\" groff 不懂中文断行，两端对齐会把行距拉得很难看，这里统一左对齐。
 .ad l
 .SH 名称
-china-config \- 切换 Flathub 国内镜像源
+china-config \- Flathub 国内镜像源与雾凇拼音的切换工具
 .SH 概要
 .PP
 .B china-config
@@ -17,17 +17,31 @@ mirror
 mirror
 .B set
 .RI < 别名 >
+.br
+.B china-config
+rime
+.BR status " | " install " | " update " | " enable
 .SH 描述
 .PP
 .B china-config
 是 Pixel Blue China 镜像自带的小工具，
-当前只有一个功能：
+两组子命令，方向正好相反：
+.TP
+.B mirror
 把系统级 flatpak 里名为
 .I flathub
 的远程源（remote）的地址改成国内镜像站，
 或者改回官方源。
+要 root，写的是系统级
+.IR /var 。
+.TP
+.B rime
+把雾凇拼音（rime-ice）装进你自己的用户目录，
+并把 Rime 追加进输入源。
+绝不能加 sudo，写的是你的
+.IR ~/.config 。
 .PP
-它改的是
+mirror 改的是
 .RS
 .nf
 /var/lib/flatpak/repo/config
@@ -48,7 +62,7 @@ mirror
 不需要 root；
 .B set
 要写系统级配置，必须 root。
-.SH 命令
+.SH mirror 命令
 .TP
 .B mirror status
 显示当前生效的 Flathub 地址，
@@ -82,6 +96,81 @@ collection-id 一起换掉，
 （比如这台机器一个 flatpak 应用都没装过），
 改用数据文件新建它，
 标题、图标、密钥一并从文件里读。
+.SH rime 命令
+.PP
+镜像只带引擎（
+.IR ibus-rime ", " librime-lua "、以及本工具需要的 " git ），
+因为 bootc 系统不能自己装系统包。
+词库、方案、输入源是用户级状态，
+全部落在你自己的目录里，
+本工具不替你决定、也不在后台动它们。
+.TP
+.B rime status
+报告三件事：词库目录
+.RI ( $XDG_CONFIG_HOME /ibus/rime ，
+默认
+.IR ~/.config/ibus/rime )
+现在是没建过、是空的、是个 git 仓库、
+还是有你自己拷进去的配置；
+ibus 的 Rime 引擎组件在不在；GNOME 输入源里有没有 Rime。
+每一项后面给出还差的那一步命令。
+.TP
+.B rime install
+把雾凇拼音浅克隆（
+.BR "git clone --depth 1" ）
+到上面那个目录，约 66M。仓库是
+.IR https://github.com/iDvel/rime-ice 。
+目录里已经有不是 git 仓库的内容时，
+本命令直接退出，不会覆盖你的配置；
+要换过来请自己先
+.B mv
+走备份，或者 clone 到别处再
+.BR cp -a
+过去。
+.TP
+.B rime update
+.BR "git pull --ff-only" 。
+不是 git 仓库、或者不能快进
+（本地有改动、上游改过历史）
+时都会停下来让你自己处理，
+工具不替你合并、不替你 stash。
+词库更新后执行一次
+.B ibus restart
+或在 Rime 托盘菜单里选「重新部署」才会生效。
+.TP
+.B rime enable
+往 GNOME 的
+.I org.gnome.desktop.input-sources
+的
+.I sources
+里
+.B 追加
+一个
+.IR "('ibus', 'rime')" ，
+你已有的布局和其它引擎原样保留、顺序不动。
+注意手动执行 README 里那条
+.B gsettings set
+是整表覆盖，会把你现有的输入源冲掉；
+.B rime enable
+只做追加，重复执行是幂等的。
+.PP
+这一组命令都不要加
+.BR sudo ：
+加了会拒绝执行，因为
+.B sudo
+会把词库和配置写进 root 的目录、并把所有权弄错。
+.PP
+工具不内置任何 GitHub 代理或第三方镜像：
+拉下来的是要在你会话里跑 Lua 代码的配置包，
+不经你确认就换来源不合适。
+GitHub 不通的时候，
+自己下载 zip 解压到词库目录即可。
+个人词频在
+.I *.user.xtab
+里、不在仓库中，更新不会碰；
+自己的改动写在
+.I *.custom.yaml
+（patch 机制）里，上游覆盖回来也不会冲掉。
 .SH 可用的源
 .PP
 可选的源不写死在程序里，
@@ -223,22 +312,36 @@ GNOME 软件中心和 Discover 按这个名字识别 Flathub，
 .SH 退出状态
 .TP
 .B 0
-成功，包括「当前已经是目标源」这种情况。
+成功，包括「当前已经是目标源」
+「输入源里已经有 Rime」这类不需要改动的情况。
 .TP
 .B 1
-需要 root、找不到
+需要 root 却没有 root、rime 子命令被加了 sudo、找不到
 .B flatpak
-命令，或者
-.B flatpak
+或
+.B git
+命令、非 GNOME 会话读不到输入源设置、
+词库目录不是 git 仓库，
+或者
+.BR flatpak / git
 自身执行失败。
 .TP
 .B 2
-用法错误，比如别名不在白名单里。
+用法错误，比如别名不在白名单里、子命令不认识。
 .SH 参见
 .BR flatpak (1),
 .BR flatpak-remote-modify (1),
 .BR flatpak-remotes (1),
-.BR bootc (1)
+.BR bootc (1),
+.BR git (1),
+.BR gsettings (1)
+.PP
+雾凇拼音上游：
+.RS
+.nf
+https://github.com/iDvel/rime-ice
+.fi
+.RE
 .PP
 项目说明：
 .RS

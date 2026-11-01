@@ -1,9 +1,13 @@
 #!/usr/bin/bash
 #
-# china-config —— Pixel Blue China 的国内镜像源切换工具。
+# china-config —— Pixel Blue China 的国内镜像源与输入法工具。
 #
-# 它只做一件事：把系统级 flathub 这个 remote 的地址改成你想要的那个，并且这个
-# 决定写进 /var/lib/flatpak/repo/config 之后，bootc switch / bootc upgrade 都
+# 两组子命令：
+#   mirror  改 Flathub 源（要 root，写的是系统级 /var/lib/flatpak）
+#   rime    装/更新雾凇拼音、把 Rime 加进输入源（绝不能 root，写的是你自己的 ~）
+#
+# mirror：它只做一件事，把系统级 flathub 这个 remote 的地址改成你想要的那个，并且
+# 这个决定写进 /var/lib/flatpak/repo/config 之后，bootc switch / bootc upgrade 都
 # 不会再动它（镜像管不到 /var）。
 #
 # 镜像里刻意不带任何 Flathub 默认源。原因：这个镜像的用户都是 `bootc switch`
@@ -25,16 +29,28 @@ set -euo pipefail
 REMOTE_NAME=flathub
 DATA_DIR=/usr/share/china-config/remotes.d
 
+# 雾凇拼音（rime-ice）与 ibus-rime 的用户目录。Rime 的 user dir 就是这里，
+# librime 启动时会自动「重新部署」一次，把 YAML 编译成二进制词典。
+RIME_DIR=${XDG_CONFIG_HOME:-${HOME}/.config}/ibus/rime
+RIME_REPO=https://github.com/iDvel/rime-ice
+INPUTS_SCHEMA=org.gnome.desktop.input-sources
+
 usage() {
   cat <<'EOF'
 china-config —— Pixel Blue China 中文适配小工具
 
-用法：
-  china-config mirror status            查看当前 Flathub 源（只读，不用 root）
-  china-config mirror list              列出本工具管理的源，并标出当前生效的
-  sudo china-config mirror set <别名>    切换 Flathub 源
+Flathub 源：
+  china-config mirror status             查看当前 Flathub 源（只读，不用 root）
+  china-config mirror list               列出本工具管理的源，并标出当前生效的
+  sudo china-config mirror set <别名>     切换 Flathub 源
 
-  man china-config                      详细文档
+Rime 输入法（不要用 sudo，全部写在你自己的 ~/.config 里）：
+  china-config rime status               看词库目录和输入源现在是什么状态
+  china-config rime install              把雾凇拼音（rime-ice）装到 ~/.config/ibus/rime
+  china-config rime update               git pull 更新词库
+  china-config rime enable               把 Rime 追加进 GNOME 输入源（不动你已有的）
+
+  man china-config                       详细文档
 EOF
 }
 
@@ -192,6 +208,182 @@ cmd_set() {
   printf '接着跑一次 flatpak update，软件中心的目录就会走新地址。\n'
 }
 
+# ---------- rime：雾凇拼音 ----------
+#
+# 这一组全是用户级操作：词库在 ~/.config/ibus/rime，输入源在 gsettings 里。镜像
+# 只负责把 ibus-rime 引擎和 git 带进 /usr（bootc 上用户自己装不了系统包），装不
+# 装预设、用哪个方案、什么时候更新，都由你在终端里点这一下决定。
+
+rime_guard() {
+  [[ $EUID -ne 0 ]] || die "rime 子命令不要加 sudo：它写的是你自己账号下的 $RIME_DIR。"
+  [[ -n ${HOME:-} ]] || die "HOME 是空的，找不到你的用户目录。"
+}
+
+need_git() {
+  command -v git >/dev/null 2>&1 || die "找不到 git 命令（本镜像应该带上它）。"
+}
+
+# 目录现状：repo（git 仓库）/ other（有内容但不是仓库）/ empty / none
+rime_dir_state() {
+  if [[ -d $RIME_DIR/.git ]]; then
+    printf 'repo'
+  elif [[ -d $RIME_DIR ]] && [[ -n $(ls -A "$RIME_DIR" 2>/dev/null) ]]; then
+    printf 'other'
+  elif [[ -d $RIME_DIR ]]; then
+    printf 'empty'
+  else
+    printf 'none'
+  fi
+}
+
+# 当前的输入源列表，形如 [('xkb', 'us'), ('ibus', 'rime')]
+inputs_current() {
+  gsettings get "$INPUTS_SCHEMA" sources 2>/dev/null
+}
+
+# 比较时把所有空格去掉，别赌 glib 的打印格式。
+has_rime_source() {
+  local compact=${1// /}
+  [[ $compact == *"('ibus','rime')"* ]]
+}
+
+has_xkb_source() {
+  local compact=${1// /}
+  [[ $compact == *"'xkb'"* ]]
+}
+
+cmd_rime_status() {
+  rime_guard
+
+  local state engine cur
+  state=$(rime_dir_state)
+  printf '词库目录：%s\n' "$RIME_DIR"
+  case $state in
+    repo)
+      local head branch
+      if command -v git >/dev/null 2>&1; then
+        head=$(git -C "$RIME_DIR" log -1 --format='%h %ad' --date=short 2>/dev/null)
+        branch=$(git -C "$RIME_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)
+        printf '已经是一个 git 仓库了（分支 %s，最后一次提交 %s）。\n' "${branch:-未知}" "${head:-未知}"
+        [[ -f $RIME_DIR/rime_ice.schema.yaml ]] ||
+          printf '  注意：目录里没有 rime_ice.schema.yaml，看起来不是雾凇拼音。\n'
+      else
+        printf '已经是一个 git 仓库了（没有 git 命令，读不出提交信息）。\n'
+      fi
+      printf '  更新：china-config rime update\n'
+      ;;
+    other)
+      printf '  目录里已经有你自己在用的配置，而且不是 git 仓库。本工具不会覆盖它，\n'
+      printf '  要更新就得自己动手：备份之后把 %s 下载下来 cp -a 覆盖，\n' "$RIME_REPO"
+      printf '  自己的改动写在 *.custom.yaml（patch 机制）里不会被上游冲掉。\n'
+      ;;
+    empty)
+      printf '  目录是空的，还没装词库。\n'
+      printf '  装雾凇拼音：china-config rime install\n'
+      ;;
+    none)
+      printf '  还没建过。Rime 自带的 luna_pinyin、仓颉这些方案仍然可用，\n'
+      printf '  想用雾凇拼音：china-config rime install\n'
+      ;;
+  esac
+
+  engine=$(find /usr/share/ibus/component -maxdepth 1 -name '*rime*' -print -quit 2>/dev/null || true)
+  if [[ -n $engine ]]; then
+    printf '引擎：已安装（%s）\n' "$engine"
+  else
+    printf '引擎：在 /usr/share/ibus/component 里没看到 rime 的组件文件；打不出中文的话先确认系统里有 ibus-rime。\n'
+  fi
+
+  if command -v gsettings >/dev/null 2>&1 && gsettings list-schemas 2>/dev/null | grep -qx -- "$INPUTS_SCHEMA"; then
+    cur=$(inputs_current)
+    if has_rime_source "${cur:-}"; then
+      printf '输入源：已包含 Rime（%s）\n' "$cur"
+    else
+      printf '输入源：还没有 Rime（%s）\n' "${cur:-未读到}"
+      printf '  加上：china-config rime enable，或者 设置 → 键盘 → 添加输入法 → 汉语 → Rime\n'
+    fi
+  else
+    printf '输入源：这里读不到 GNOME 的 input-sources 设置（不是 GNOME 会话？），请在你的桌面里添加输入法。\n'
+  fi
+}
+
+cmd_rime_install() {
+  rime_guard
+  need_git
+
+  local state
+  state=$(rime_dir_state)
+  case $state in
+    repo)
+      die "$RIME_DIR 已经是一个 git 仓库了，不用重装。要更新：china-config rime update"
+      ;;
+    other)
+      die "$RIME_DIR 里已经有不是 git 仓库的内容，本工具不会覆盖你的配置。想换成雾凇拼音，自己动手最稳妥：先把目录移走备份（mv \"$RIME_DIR\" \"${RIME_DIR}.bak\"），再跑一次 install；或者 clone 到别处再 cp -a 覆盖过去。"
+      ;;
+  esac
+
+  printf '正在从 %s 拉雾凇拼音到 %s …\n' "$RIME_REPO" "$RIME_DIR"
+  mkdir -p "$(dirname "$RIME_DIR")"
+  # --depth 1：只要最新那一份，仓库历史对词库没用，国内拉也省一大截流量。
+  git clone --depth 1 --single-branch "$RIME_REPO" "$RIME_DIR" ||
+    die "git clone 失败。GitHub 不通的话，自己下载 zip 解压到 $RIME_DIR 即可，本工具不做第三方镜像。"
+
+  printf '词库装好了。还差两步：\n'
+  if ! { command -v gsettings >/dev/null 2>&1 && has_rime_source "$(inputs_current)"; }; then
+    printf '  1) china-config rime enable    把 Rime 加进输入源\n'
+  fi
+  printf '  2) ibus restart                   重启 IBus，首次编译词库要几十秒\n'
+  printf '之后更新：china-config rime update\n'
+}
+
+cmd_rime_update() {
+  rime_guard
+  need_git
+
+  [[ $(rime_dir_state) == repo ]] ||
+    die "$RIME_DIR 不是一个 git 仓库，没法用本工具更新（手动下载覆盖即可，自定义改动记得放在 *.custom.yaml 里）。"
+
+  git -C "$RIME_DIR" pull --ff-only ||
+    die "git pull 没能快进：可能是本地有改动，或上游改过历史。请自己看一下 git -C \"$RIME_DIR\" status 再决定，工具不替你处理这些。"
+
+  printf '词库已更新。执行 ibus restart（或在 Rime 托盘菜单里选「重新部署」）生效。\n'
+  printf '个人词频在 *.user.xtab 里、不在仓库中，更新不会碰到；你自己的改动请写在 *.custom.yaml。\n'
+}
+
+cmd_rime_enable() {
+  rime_guard
+
+  command -v gsettings >/dev/null 2>&1 || die "找不到 gsettings 命令。"
+  gsettings list-schemas 2>/dev/null | grep -qx -- "$INPUTS_SCHEMA" ||
+    die "这台机器上没有 GNOME 的 $INPUTS_SCHEMA 设置（可能不是 GNOME 会话）。请在你的桌面设置里添加输入法：汉语 → Rime。"
+
+  local cur body new
+  cur=$(inputs_current)
+  # 空数组时 glib 会带上类型注解，打印成 `@a(ss) []`，先把注解剥掉。
+  [[ ${cur:-} == @* ]] && cur=${cur#* }
+  [[ ${cur:-} == \[* ]] || die "读到的输入源格式不认识，不动你的设置：${cur:-空}"
+  if has_rime_source "$cur"; then
+    printf '输入源里已经有 Rime，不需要改动：%s\n' "$cur"
+    return 0
+  fi
+
+  # 只做追加：把你已有的布局和其它引擎原样留着。
+  body=${cur#\[}
+  body=${body%\]}
+  if [[ -z ${body// /} ]]; then
+    new="[('ibus', 'rime')]"
+  else
+    new="[$body, ('ibus', 'rime')]"
+  fi
+
+  gsettings set "$INPUTS_SCHEMA" sources "$new" || die "写入输入源失败，你的设置没有改变。"
+  printf '已把 Rime 追加到输入源。\n  之前：%s\n  现在：%s\n' "$cur" "$(inputs_current)"
+  if ! has_xkb_source "$new"; then
+    printf '提醒：列表里没有 xkb 键盘布局，只挂 Rime 一般也能用，但想切英文最好再补一个「英语(美国)」。\n'
+  fi
+  printf '接着执行 ibus restart（或注销重新登录）生效，首次编译词库要几十秒。\n'
+}
+
 main() {
   local group=${1:-}
   case $group in
@@ -211,6 +403,28 @@ main() {
           shift
           [[ $# -eq 1 ]] || die "用法：china-config mirror set <别名>（可选：$(aliases | tr '\n' ' ')）" 2
           cmd_set "$1"
+          ;;
+        *)
+          printf 'china-config: 未知子命令 %s\n\n' "${1:-}" >&2
+          usage
+          exit 2
+          ;;
+      esac
+      ;;
+    rime)
+      shift
+      case ${1:-} in
+        status | "")
+          cmd_rime_status
+          ;;
+        install)
+          cmd_rime_install
+          ;;
+        update)
+          cmd_rime_update
+          ;;
+        enable)
+          cmd_rime_enable
           ;;
         *)
           printf 'china-config: 未知子命令 %s\n\n' "${1:-}" >&2

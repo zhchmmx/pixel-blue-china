@@ -2,36 +2,40 @@
 
 This repository builds a custom [bootc](https://github.com/bootc-dev/bootc) image on top of [Pixel Blue](https://github.com/zhchmmx/pixel-blue). It follows the [Universal Blue image template](https://github.com/ublue-os/image-template), which is the recommended way to make customizations to any Universal Blue image.
 
-Currently there are two modifications: the Chinese input method engine (`ibus-rime` and `librime-lua`, installed by `build_files/build.sh` because a bootc system cannot install system packages itself), and `china-config`, a small CLI for pointing Flathub at a Chinese mirror. See 中文适配 below.
+Currently there are two modifications: the Chinese input method engine (`ibus-rime`, `librime-lua` and `git`, installed by `build_files/build.sh` because a bootc system cannot install system packages itself), and `china-config`, a small CLI that points Flathub at a Chinese mirror and installs the rime-ice dictionaries into your own `~/.config`. See 中文适配 below.
 
 The resulting image is published as `ghcr.io/zhchmmx/pixel-blue-china`.
 
 # 中文适配 (Pixel Blue China)
 
-本镜像在 [pixel-blue](https://github.com/zhchmmx/pixel-blue)（GNOME / Fedora Silverblue 基座）之上只加两类东西：bootc 上用户自己装不出来的系统包（Rime 引擎），以及一个改 Flathub 源的小工具 `china-config`。
+本镜像在 [pixel-blue](https://github.com/zhchmmx/pixel-blue)（GNOME / Fedora Silverblue 基座）之上只加两类东西：bootc 上用户自己装不出来的系统包（Rime 引擎、git），以及一个中文适配小工具 `china-config`。
 
-边界画在这里：**镜像管 `/usr`，你的状态归你。** 用户目录、输入源设置、装过哪些 flatpak 应用、用哪个镜像站，镜像一概不代做，也不设默认值。
+边界画在这里：**镜像管 `/usr`，你的状态归你。** 用户目录、输入源设置、装没装词库、装过哪些 flatpak 应用、用哪个镜像站，镜像一概不代做，也不设默认值 —— `china-config` 提供入口，动作由你在终端里点。
 
-## 中文输入法：只带引擎，配置归你
+## 中文输入法：镜像带引擎，装词库用 china-config
 
-bootc 系统不能自己装系统包，用户在装机后 `dnf5 install ibus-rime` 是做不到的，所以镜像替你把这一步做掉：`ibus-rime` + `librime-lua`（后者是社区预设几乎都要、而 Fedora 不会随 `ibus-rime` 一起装的 Lua 模块）。
+bootc 系统不能自己装系统包，所以镜像替你把引擎这一步做掉：`ibus-rime` + `librime-lua`（后者是社区预设几乎都要、而 Fedora 不会随 `ibus-rime` 一起装的 Lua 模块），外加 `git`（`china-config rime` 靠它拉词库，bootc 上事后装不上）。
 
-引擎之外还差两小步，都在你自己手里：
+引擎之外还差两小步，工具把每条压成一行（都不要加 sudo，写的是你自己的 `~/.config`）：
 
-1. 添加输入源：设置 → 键盘 → 添加输入法 → 汉语 → Rime。等价的命令是
+```bash
+china-config rime install   # 浅克隆雾凇拼音（rime-ice）到 ~/.config/ibus/rime，约 66M
+china-config rime enable    # 把 Rime 追加进 GNOME 输入源，保留你已有的布局
+ibus restart                # 首次编译词库要几十秒
+```
 
-   ```bash
-   gsettings set org.gnome.desktop.input-sources sources "[('xkb', 'us'), ('ibus', 'rime')]"
-   ```
+`china-config rime status` 会报告目录、引擎、输入源三件事各是什么状态、还差哪一步；`china-config rime update` 就是 `git pull --ff-only`。
 
-2. 词库与方案（可选）。不配也能直接用，Rime 自带 `luna_pinyin`、仓颉这些方案。想用雾凇拼音（[rime-ice](https://github.com/iDvel/rime-ice)），一个干净的目录可以这样起手：
+手工做同样的事也行，下面两条是等价命令：
 
-   ```bash
-   git clone https://github.com/iDvel/rime-ice ~/.config/ibus/rime
-   ibus restart        # 或在 Rime 托盘菜单里选「部署」，首次编译词库要几十秒
-   ```
+```bash
+gsettings set org.gnome.desktop.input-sources sources "[('xkb', 'us'), ('ibus', 'rime')]"
+git clone https://github.com/iDvel/rime-ice ~/.config/ibus/rime
+```
 
-   目录里已经有你在用的配置，就 clone 到别处再 `cp -a` 覆盖过去。之后更新是 `cd ~/.config/ibus/rime && git pull` 加一次重新部署；自己的改动写在 `*.custom.yaml`（patch 机制）里，上游覆盖回来不会冲掉，`*.user.xtab` 那类个人词频不在仓库里，更新也不碰。
+注意那条 `gsettings` 是**整表覆盖**，会把你已有的其它输入源冲掉，`rime enable` 是追加——先 `gsettings get` 看一眼再自己敲的话，别漏了原有的项。
+
+几条刻意的边界：目录里已经有不是 git 仓库的内容时，`install` 直接拒绝动它，要你自己备份或 `cp -a` 覆盖；`update` 认不出仓库也一样退出，不替你处理冲突。工具不内置任何第三方 GitHub 代理（拉下来的是要在你会话里跑的 Lua 代码，不经确认换源不合适），GitHub 不通就自己下载 zip 解压到 `~/.config/ibus/rime`。词库更新后的自定义改动写在 `*.custom.yaml`（patch 机制）里，上游覆盖回来不会冲掉，`*.user.xtab` 那类个人词频不在仓库里，更新也不碰。
 
 ## Flathub 源：镜像里没有默认值，改源用 china-config
 
