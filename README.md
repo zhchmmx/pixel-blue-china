@@ -2,15 +2,15 @@
 
 This repository builds a custom [bootc](https://github.com/bootc-dev/bootc) image on top of [Pixel Blue](https://github.com/zhchmmx/pixel-blue). It follows the [Universal Blue image template](https://github.com/ublue-os/image-template), which is the recommended way to make customizations to any Universal Blue image.
 
-Currently there are two modifications: the Chinese input method engine (`ibus-rime`, `librime-lua` and `git`, installed by `build_files/build.sh` because a bootc system cannot install system packages itself), and `china-config`, a small CLI that points Flathub at a Chinese mirror and installs the rime-ice dictionaries into your own `~/.config`. See 中文适配 below.
+Currently there are three modifications: the Chinese input method engine (`ibus-rime`, `librime-lua` and `git`, installed by `build_files/build.sh` because a bootc system cannot install system packages itself), `china-config`, a small CLI that points Flathub at a Chinese mirror and installs the rime-ice dictionaries into your own `~/.config`, and the containers signature-policy drop-in that makes `podman`/`skopeo` verify the cosign signature `build.yml` publishes for this image (content only, no build logic). See 中文适配 below.
 
 The resulting image is published as `ghcr.io/zhchmmx/pixel-blue-china`.
 
 # 中文适配 (Pixel Blue China)
 
-本镜像在 [pixel-blue](https://github.com/zhchmmx/pixel-blue)（GNOME / Fedora Silverblue 基座）之上只加两类东西：bootc 上用户自己装不出来的系统包（Rime 引擎、git），以及一个中文适配小工具 `china-config`。
+本镜像在 [pixel-blue](https://github.com/zhchmmx/pixel-blue)（GNOME / Fedora Silverblue 基座）之上加三类东西：bootc 上用户自己装不出来的系统包（Rime 引擎、git），一个中文适配小工具 `china-config`，以及三份让 pull 校验 cosign 签名的 containers 配置。
 
-边界画在这里：**镜像管 `/usr`，你的状态归你。** 用户目录、输入源设置、装没装词库、装过哪些 flatpak 应用、用哪个镜像站，镜像一概不代做，也不设默认值 —— `china-config` 提供入口，动作由你在终端里点。
+边界画在这里：**镜像管 `/usr`，你的状态归你。** 用户目录、输入源设置、装没装词库、装过哪些 flatpak 应用、用哪个镜像站，镜像一概不代做，也不设默认值 —— `china-config` 提供入口，动作由你在终端里点。上面那三份配置是这条边界唯一例外，它们写进 `/etc`，管的是「这台机器信任哪个仓库的签名」，不是你的个人状态。
 
 ## 中文输入法：镜像带引擎，装词库用 china-config
 
@@ -54,6 +54,47 @@ sudo china-config mirror set official  # 退回 Flathub 官方源
 几点已知边界：SJTUG 是智能缓存，未命中会 302 回源到 Flathub 原站，完全不通原站的网络仍可能有少量请求失败；manifest 里标注 `extra-data` 的文件（NVIDIA 驱动、JetBrains 之类）不经镜像站，仍从作者提供的源站下载；USTC 的 flathub 镜像缺少 `summary.sig`（2026-11 实测 404），flatpak 拿不到可校验的目录，因此没有收进可选源。
 
 没有图形化的切换入口：GNOME 的面板是编译进 control-center 的 C 模块，没有运行时插件位，一次性配置也不适合常驻应用网格。Cloudflare WARP 与其他代理工具不在本镜像当前范围内。
+
+## 拉取时的镜像验签（cosign）
+
+`build.yml` 推完镜像就会用 cosign 签名，签名以 `sha256-<manifest-digest>.sig` 这样的 tag 存在同一个仓库里。但只签名等于没人看：镜像里还得有三份配置，pull 的时候才有人去校验它们。
+
+```text
+/etc/containers/policy.json                            对本仓库强制 sigstoreSigned
+/etc/containers/registries.d/pixel-blue-china.yaml     让 containers/image 去读 .sig 附件
+/etc/pki/containers/pixel-blue-china.pub               校验用的公钥，内容就是仓库根的 cosign.pub
+```
+
+三份都放在 `system_files/` 的对应路径下，由 `build_files/modules/00-system-files.sh` 现有的 `cp -avf` 拷进镜像，构建脚本不需要改。凡是走 containers/image 的拉取都会被强制校验（`podman pull`、`skopeo copy` 是同一条代码路径）。2026-11-01 用本仓库真实 tag 实测：`latest` 有签名，`skopeo copy docker://ghcr.io/zhchmmx/pixel-blue-china:latest` 校验通过后正常拉完；`20261101.12` 没签名，1 秒内报 `Source image rejected: A signature was required, but no signature exists`；把 `keyPath` 换成基座那把公钥再拉同一份 `latest`，同样 1 秒内报 `cryptographic signature verification failed`。
+
+bootc 侧默认不强制，这不是这份配置能改的：`bootc switch` / `bootc upgrade` 不带标志时用的是 `SignatureSource::ContainerPolicyAllowInsecure`（bootc 源码给这条注释的是 "NOT RECOMMENDED"）；加 `--enforce-container-sigpolicy` 才切到 `ContainerPolicy`，而那个模式只看 policy 顶层的 `default`，见到 `insecureAcceptAnything` 就直接 `refusing usage` 报错，并不会替我们把 scope 里的 `sigstoreSigned` 跑一遍。本仓库的 `default` 和上游 pixel-blue、Universal Blue 模板一样是 `insecureAcceptAnything`，改成 `reject` 就得顺手放行整机其它所有来源，不在这个改动范围内。
+
+所以要在装机这一步真的验签，现在是两步：
+
+```bash
+sudo podman pull ghcr.io/zhchmmx/pixel-blue-china:latest        # 这一步按 policy.json 强制验签
+sudo bootc switch --transport containers-storage ghcr.io/zhchmmx/pixel-blue-china:latest
+```
+
+`policy.json` 是整份覆盖的，所以基座那条 scope 也一起写进来了：pixel-blue 镜像自己带一份同样机制的配置管它的仓库，`keyPath` 指向基座提供的 `/etc/pki/containers/pixel-blue.pub`。漏掉它，从本镜像 `bootc switch` 回 pixel-blue 就退化成不校验；而那个公钥文件哪天不见了，pull 会明确报 key 加载失败，不会静默放行。
+
+镜像站地址不要写进 policy。签名身份绑的是仓库地址本身，而 `.sig` 附件必须由你 pull 的那个 registry 提供 —— 实测 1ms（`ghcr.1ms.run`）代理了 image manifest，但不代理签名附件：请求 `ghcr.1ms.run/v2/zhchmmx/pixel-blue/manifests/sha256-<digest>.sig` 返回 `MANIFEST_UNKNOWN`（原站同一个 tag 是 200）。把 scope 换成镜像站，结果是每次 pull 都「找不到签名」而被拒。
+
+加速的办法是慢一次，不是换 scope：签名和内容都在 `ghcr.io`，本地 pull 过一次之后，`bootc upgrade` 读的就是本机 containers-storage 里那份，不再经过 registry。确实需要长期走镜像站，得自己同步镜像**连同 `.sig` 附件**，再在 policy 里给镜像站单加一条 scope，`signedIdentity` 用 `exactRepository` 指回 `ghcr.io/zhchmmx/pixel-blue-china` —— `matchRepository` 在镜像站上必然不匹配，因为签名里记的是原站的仓库名。
+
+想绕开 registry（本地构建、PR 构建本来就不签名）：
+
+```bash
+sudo bootc switch --transport containers-storage localhost/pixel-blue-china:latest
+```
+
+想自己确认某个 tag 到底签没签（不依赖镜像里的配置）：
+
+```bash
+cosign verify --key /etc/pki/containers/pixel-blue-china.pub ghcr.io/zhchmmx/pixel-blue-china:latest
+```
+
+签过名的 digest 才有救。本仓库 `20261101.7`、`20261101.12` 这两个 tag 对应的 digest 没签过（`.sig` tag 实测 404），装上这份配置后再固定切到它们会失败 —— 切 `latest`，或者重跑一次 `build.yml`。换密钥时同理，公钥两份都要更新，然后必须重跑一次 `build.yml`，否则是「已发布但未签名」状态。步骤见 Step 2a。
 
 # Community
 
@@ -131,6 +172,16 @@ gh secret set SIGNING_SECRET < cosign.key
 ```
 </details>
 
+The public key belongs in two places, and both copies must be byte-identical: `cosign.pub` at the repo root (what a reviewer checks, and what `cosign verify --key cosign.pub` uses) and `system_files/etc/pki/containers/pixel-blue-china.pub`, which becomes `/etc/pki/containers/pixel-blue-china.pub` in the image — the `keyPath` that `policy.json` points at. Only the public key is ever committed; `.gitignore` keeps `cosign.key` out.
+
+Verification is only useful once `build.yml` has signed the published digest, so run the workflow after saving the secret and confirm:
+
+```bash
+cosign verify --key cosign.pub ghcr.io/zhchmmx/pixel-blue-china:latest
+```
+
+Anything pushed before that run is published-but-unsigned, and `bootc switch` to those tags now fails on the signature check. Rotating the key pair has the same shape: update both public keys, replace the secret, re-run `build.yml`. Details in [拉取时的镜像验签](#拉取时的镜像验签cosign).
+
 ### Step 2b: Base Image
 
 This repository derives from `ghcr.io/zhchmmx/pixel-blue:latest`, set on the `FROM` line of the `Containerfile`. To derive from a different image instead, change that line; any Universal Blue image or a Fedora/CentOS bootc image works, for example:
@@ -173,6 +224,8 @@ To stay on a specific build instead of the moving tag, use its version tag (see 
 sudo bootc switch ghcr.io/zhchmmx/pixel-blue-china:20261101.42
 ```
 This should queue your image for the next reboot, which you can do immediately after the command finishes. See the following section for an explanation of the important parts of the template for customization.
+
+`bootc` does not enforce the container signature policy on its own; pulling with `podman` first and switching from `containers-storage` does. See [拉取时的镜像验签](#拉取时的镜像验签cosign).
 
 # Repository Contents
 
