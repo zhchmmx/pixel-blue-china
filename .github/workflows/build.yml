@@ -60,6 +60,16 @@ jobs:
 
           echo "DEFAULT_TAG=${DEFAULT_TAG}" >> $GITHUB_ENV
 
+      - name: Resolve image version
+        id: resolve-version
+        run: |
+          # Pure <UTC date>.<build number>: no branch name, no commit hash.
+          # run_number is unique and monotonically increasing per workflow, so
+          # concurrent builds cannot collide. IMAGE_VERSION is resolved once
+          # here and reused by the build, rechunk and tag steps.
+          echo "BUILD_NUMBER=${{ github.run_number }}" >> $GITHUB_ENV
+          echo "IMAGE_VERSION=$(date -u +%Y%m%d).${{ github.run_number }}" >> $GITHUB_ENV
+
       - name: Prepare environment
         run: |
           # Lowercase the image uri https://github.com/macbre/push-to-ghcr/issues/12

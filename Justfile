@@ -81,8 +81,11 @@ sudoif command *args:
 #   $target_image - The tag you want to apply to the image (default: $image_name).
 #   $tag - The tag for the image (default: $default_tag).
 #
-# The script constructs the version string using the tag and the current date.
-# If the git working directory is clean, it also includes the short SHA of the current HEAD.
+# The script sets the version label to <UTC date>.<build number> (for example
+# 20261101.42). In CI that build number is the GitHub Actions run number; local
+# builds fall back to BUILD_NUMBER or the commit count. The version carries no
+# branch name or commit hash; the commit is recorded separately in
+# org.opencontainers.image.revision.
 #
 # just build $target_image $tag
 #
@@ -98,7 +101,8 @@ build $target_image=image_name $tag=default_tag:
 
     set -euox pipefail
 
-    BUILD_ARGS=()
+    IMAGE_VERSION="${IMAGE_VERSION:-$(date -u +%Y%m%d).${BUILD_NUMBER:-$(git rev-list --count HEAD)}}"
+
     LABELS=()
     if [[ -z "$(git status -s)" ]]; then
         GIT_SHA=$(git rev-parse --short HEAD)
@@ -106,7 +110,8 @@ build $target_image=image_name $tag=default_tag:
         LABELS+=("--label" "org.opencontainers.image.documentation=https://raw.githubusercontent.com/{{ repo_organization }}/{{ image_name }}/${GIT_SHA}/README.md")
         LABELS+=("--label" "org.opencontainers.image.source=https://github.com/{{ repo_organization }}/{{ image_name }}/blob/${GIT_SHA}/Containerfile")
         LABELS+=("--label" "org.opencontainers.image.url=https://github.com/{{ repo_organization }}/{{ image_name }}/tree/${GIT_SHA}")
-        LABELS+=("--label" "org.opencontainers.image.version={{ default_tag }}.$(date +%Y%m%d)-${GIT_SHA}")
+        LABELS+=("--label" "org.opencontainers.image.version=${IMAGE_VERSION}")
+        LABELS+=("--label" "org.opencontainers.image.revision=${GIT_SHA}")
     fi
 
     # Image metadata for https://artifacthub.io/ - This is optional but is highly recommended so we all can get a index of all the custom images
@@ -122,7 +127,7 @@ build $target_image=image_name $tag=default_tag:
     LABELS+=("--label" "org.opencontainers.image.vendor={{ repo_organization }}")
 
     # This actually builds the image!
-    PODMAN_BUILD_ARGS=("${BUILD_ARGS[@]}" "${LABELS[@]}" --pull=newer --tag "${target_image}:${tag}" --file Containerfile)
+    PODMAN_BUILD_ARGS=("${LABELS[@]}" --pull=newer --tag "${target_image}:${tag}" --file Containerfile)
 
     podman build "${PODMAN_BUILD_ARGS[@]}" .
 
@@ -163,10 +168,19 @@ rechunk $target_image=image_name $tag=default_tag:
     podman tag "${CHUNKED_IMAGE}" "${target_image}:${tag}"
 
 # Split the image for smaller updates (Classical)!
+#
+# rpm-ostree compose build-chunked-oci re-exports the image from the ostree
+# commit and does NOT carry over the config labels set by `just build`
+# (org.opencontainers.image.*, io.artifacthub.package.*), so they must be
+# re-stamped on the finished image or the pushed image loses them all. The
+# upstream template does not do this, so metadata set in image-template.env
+# alone does not show up on GHCR.
 ostree-rechunk $target_image=image_name $tag=default_tag:
     #!/usr/bin/env bash
 
     set -xeuo pipefail
+
+    IMAGE_VERSION="${IMAGE_VERSION:-$(date -u +%Y%m%d).${BUILD_NUMBER:-$(git rev-list --count HEAD)}}"
 
     # Use the already-built local image to avoid pulling from a remote registry
     RPM_OSTREE_CHUNKER_IMAGE="localhost/${target_image}:${tag}"
@@ -186,6 +200,47 @@ ostree-rechunk $target_image=image_name $tag=default_tag:
       --rootfs /rpm-ostree \
       --output "containers-storage:[overlay@/run/host-container-storage+/run/rpm-ostree-storage]localhost/${target_image}:${tag}"
 
+    # Re-apply the build metadata on the FINAL image. Mirrors the logic in the
+    # build recipe, including the clean-working-tree condition.
+    #
+    # The derived Containerfile carries no filesystem-changing instruction on
+    # purpose: labels live in the image config, so this re-stamps metadata
+    # without adding a layer to the chunked image, which keeps the delta-update
+    # layout produced by the chunker intact.
+    LABELS=()
+    if [[ -z "$(git status -s)" ]]; then
+        GIT_SHA=$(git rev-parse --short HEAD)
+        LABELS+=("--label" "io.artifacthub.package.readme-url=https://raw.githubusercontent.com/{{ repo_organization }}/{{ image_name }}/${GIT_SHA}/README.md")
+        LABELS+=("--label" "org.opencontainers.image.documentation=https://raw.githubusercontent.com/{{ repo_organization }}/{{ image_name }}/${GIT_SHA}/README.md")
+        LABELS+=("--label" "org.opencontainers.image.source=https://github.com/{{ repo_organization }}/{{ image_name }}/blob/${GIT_SHA}/Containerfile")
+        LABELS+=("--label" "org.opencontainers.image.url=https://github.com/{{ repo_organization }}/{{ image_name }}/tree/${GIT_SHA}")
+        LABELS+=("--label" "org.opencontainers.image.version=${IMAGE_VERSION}")
+        LABELS+=("--label" "org.opencontainers.image.revision=${GIT_SHA}")
+    fi
+    LABELS+=("--label" "io.artifacthub.package.deprecated=false")
+    LABELS+=("--label" "io.artifacthub.package.keywords={{ image_keywords }}")
+    LABELS+=("--label" "io.artifacthub.package.license=Apache-2.0")
+    LABELS+=("--label" "io.artifacthub.package.logo-url={{ image_logo_url }}")
+    LABELS+=("--label" "io.artifacthub.package.prerelease=false")
+    LABELS+=("--label" "org.opencontainers.image.created=$(date -u +%Y\-%m\-%d\T%H\:%M\:%S\Z)")
+    LABELS+=("--label" "org.opencontainers.image.description={{ image_desc }}")
+    LABELS+=("--label" "org.opencontainers.image.title={{ image_name }}")
+    LABELS+=("--label" "org.opencontainers.image.vendor={{ repo_organization }}")
+
+    LABEL_CONTAINERFILE="$(mktemp)"
+    # (written with printf, not a heredoc: `just --fmt` requires every recipe
+    # line to be indented, which a terminating heredoc marker cannot be)
+    printf '%s\n' \
+      'ARG BASE' \
+      'FROM ${BASE}' \
+      > "${LABEL_CONTAINERFILE}"
+    podman build --pull=never --layers \
+      "${LABELS[@]}" \
+      --build-arg BASE="localhost/${target_image}:${tag}" \
+      --tag "${target_image}:${tag}" \
+      --file "${LABEL_CONTAINERFILE}" .
+    rm -f "${LABEL_CONTAINERFILE}"
+
 # Generate Default Tag
 [group('Utility')]
 generate-default-tag $tag=default_tag:
@@ -200,18 +255,17 @@ generate-build-tags $target_image=image_name $tag=default_tag:
     #!/usr/bin/env bash
     set -eoux pipefail
 
-    DATE=$(date +%Y%m%d)
+    IMAGE_VERSION="${IMAGE_VERSION:-$(date -u +%Y%m%d).${BUILD_NUMBER:-$(git rev-list --count HEAD)}}"
+
     BUILD_TAGS=()
+
+    # Version-based pin tag, used to freeze a specific build
     if [[ -z "$(git status -s)" ]]; then
-        GIT_SHA=$(git rev-parse --short HEAD)
-        BUILD_TAGS+=("${tag}-${GIT_SHA}")
-        BUILD_TAGS+=("${tag}-${DATE}-${GIT_SHA}")
-        BUILD_TAGS+=("${DATE}-${GIT_SHA}")
+        BUILD_TAGS+=("${IMAGE_VERSION}")
     fi
 
-    BUILD_TAGS+=("${DATE}")
+    # Moving channel tag
     BUILD_TAGS+=("${tag}")
-    BUILD_TAGS+=("${tag}-${DATE}")
 
     echo "${BUILD_TAGS[@]}"
 
@@ -296,7 +350,7 @@ _rootful_load_image $target_image=image_name $tag=default_tag:
 # Parameters:
 #   target_image: The name of the image to build (ex. localhost/fedora)
 #   tag: The tag of the image to build (ex. latest)
-#   type: The type of image to build (ex. qcow2, raw, iso)
+#   type: The type of image to build (ex. qcow2, raw)
 #   config: The configuration file to use for the build (default: disk_config/disk.toml)
 
 # Example: just _rebuild-bib localhost/fedora latest qcow2 disk_config/disk.toml
@@ -333,7 +387,7 @@ _build-bib $target_image $tag $type $config: (_rootful_load_image target_image t
 # Parameters:
 #   target_image: The name of the image to build (ex. localhost/fedora)
 #   tag: The tag of the image to build (ex. latest)
-#   type: The type of image to build (ex. qcow2, raw, iso)
+#   type: The type of image to build (ex. qcow2, raw)
 #   config: The configuration file to use for the build (deafult: disk_config/disk.toml)
 
 # Example: just _rebuild-bib localhost/fedora latest qcow2 disk_config/disk.toml
@@ -347,10 +401,6 @@ build-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_bui
 [group('Build Virtal Machine Image')]
 build-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "raw" "disk_config/disk.toml")
 
-# Build an ISO virtual machine image
-[group('Build Virtal Machine Image')]
-build-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_build-bib target_image tag "iso" "disk_config/iso.toml")
-
 # Rebuild a QCOW2 virtual machine image
 [group('Build Virtal Machine Image')]
 rebuild-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "qcow2" "disk_config/disk.toml")
@@ -359,20 +409,13 @@ rebuild-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_r
 [group('Build Virtal Machine Image')]
 rebuild-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "raw" "disk_config/disk.toml")
 
-# Rebuild an ISO virtual machine image
-[group('Build Virtal Machine Image')]
-rebuild-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_rebuild-bib target_image tag "iso" "disk_config/iso.toml")
-
-# Run a virtual machine with the specified image type and configuration
-_run-vm $target_image $tag $type $config:
+# Run a virtual machine with the specified image type
+_run-vm $target_image $tag $type:
     #!/usr/bin/env bash
     set -eoux pipefail
 
     # Determine the image file based on the type
     image_file="output/${type}/disk.${type}"
-    if [[ $type == iso ]]; then
-        image_file="output/bootiso/install.iso"
-    fi
 
     # Build the image if it does not exist
     if [[ ! -f "${image_file}" ]]; then
@@ -407,15 +450,11 @@ _run-vm $target_image $tag $type $config:
 
 # Run a virtual machine from a QCOW2 image
 [group('Run Virtal Machine')]
-run-vm-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "qcow2" "disk_config/disk.toml")
+run-vm-qcow2 $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "qcow2")
 
 # Run a virtual machine from a RAW image
 [group('Run Virtal Machine')]
-run-vm-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "raw" "disk_config/disk.toml")
-
-# Run a virtual machine from an ISO
-[group('Run Virtal Machine')]
-run-vm-iso $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "iso" "disk_config/iso.toml")
+run-vm-raw $target_image=("localhost/" + image_name) $tag=default_tag: && (_run-vm target_image tag "raw")
 
 # Run a virtual machine using systemd-vmspawn
 [group('Run Virtal Machine')]
@@ -424,7 +463,7 @@ spawn-vm rebuild="0" type="qcow2" ram="6G":
 
     set -euo pipefail
 
-    [ "{{ rebuild }}" -eq 1 ] && echo "Rebuilding the ISO" && just build-vm {{ rebuild }} {{ type }}
+    [ "{{ rebuild }}" -eq 1 ] && echo "Rebuilding the disk image" && just build-vm {{ rebuild }} {{ type }}
 
     systemd-vmspawn \
       -M "bootc-image" \
