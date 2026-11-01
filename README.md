@@ -2,9 +2,58 @@
 
 This repository builds a custom [bootc](https://github.com/bootc-dev/bootc) image on top of [Pixel Blue](https://github.com/zhchmmx/pixel-blue). It follows the [Universal Blue image template](https://github.com/ublue-os/image-template), which is the recommended way to make customizations to any Universal Blue image.
 
-Currently the only modification is the Chinese input method: `ibus-rime` and `librime-lua` are installed by `build_files/build.sh`.
+Currently there are two modifications: the Chinese input method engine (`ibus-rime`, `librime-lua` and `git`, installed by `build_files/build.sh` because a bootc system cannot install system packages itself), and `china-config`, a small CLI that points Flathub at a Chinese mirror and installs the rime-ice dictionaries into your own `~/.config`. See 中文适配 below.
 
 The resulting image is published as `ghcr.io/zhchmmx/pixel-blue-china`.
+
+# 中文适配 (Pixel Blue China)
+
+本镜像在 [pixel-blue](https://github.com/zhchmmx/pixel-blue)（GNOME / Fedora Silverblue 基座）之上只加两类东西：bootc 上用户自己装不出来的系统包（Rime 引擎、git），以及一个中文适配小工具 `china-config`。
+
+边界画在这里：**镜像管 `/usr`，你的状态归你。** 用户目录、输入源设置、装没装词库、装过哪些 flatpak 应用、用哪个镜像站，镜像一概不代做，也不设默认值 —— `china-config` 提供入口，动作由你在终端里点。
+
+## 中文输入法：镜像带引擎，装词库用 china-config
+
+bootc 系统不能自己装系统包，所以镜像替你把引擎这一步做掉：`ibus-rime` + `librime-lua`（后者是社区预设几乎都要、而 Fedora 不会随 `ibus-rime` 一起装的 Lua 模块），外加 `git`（`china-config rime` 靠它拉词库，bootc 上事后装不上）。
+
+引擎之外只差一步工具能做（不要加 sudo，它写的是你自己的 `~/.config`）：
+
+```bash
+china-config rime install   # 浅克隆雾凇拼音（rime-ice）到 ~/.config/ibus/rime，约 66M
+```
+
+剩下两步刻意留给你自己：在桌面里 设置 → 键盘 → 添加输入法 → 汉语 → Rime，然后 `ibus restart`（首次编译词库要几十秒）。`china-config rime status` 会报告目录、引擎、输入源三件事各是什么状态、还差哪一步；`china-config rime update` 就是 `git pull --ff-only`。
+
+不想用工具的话，装词库等价于这一条：
+
+```bash
+git clone https://github.com/iDvel/rime-ice ~/.config/ibus/rime
+```
+
+添输入源不做成命令，是因为 `gsettings set org.gnome.desktop.input-sources sources ...` 对这个名字是**整表覆盖**，写漏一项就把手里已有的输入源冲掉了，一个装词库的命令不该担这个风险。`status` 只用 `gsettings get` 读一下当前列表，从不写入。
+
+几条刻意的边界：目录里已经有不是 git 仓库的内容时，`install` 直接拒绝动它，要你自己备份或 `cp -a` 覆盖；`update` 认不出仓库也一样退出，不替你处理冲突。工具不内置任何第三方 GitHub 代理（拉下来的是要在你会话里跑的 Lua 代码，不经确认换源不合适），GitHub 不通就自己下载 zip 解压到 `~/.config/ibus/rime`。词库更新后的自定义改动写在 `*.custom.yaml`（patch 机制）里，上游覆盖回来不会冲掉，`*.user.xtab` 那类个人词频不在仓库里，更新也不碰。
+
+## Flathub 源：镜像里没有默认值，改源用 china-config
+
+镜像里 `/etc/flatpak/remotes.d/` 是空的，Flathub 指向哪儿由你自己决定一次。原因是这个镜像的用户全是 `bootc switch` 过来的，而 flatpak 对 `remotes.d` 里的定义文件只做一次「首次应用」：名字一旦进了仓库配置里的 `core.xa.applied-remotes`，那个文件之后就被无视。所以往 `/etc` 塞默认地址对切过来的机器完全空转，只会让少数全新部署看到另一个结果，两边都不是用户自己选的。详细推导在 `man china-config`。
+
+```bash
+china-config mirror status          # 看现在真正生效的地址（只读，不用 root）
+china-config mirror list            # 看本工具管理的源，* 标出当前生效的
+sudo china-config mirror set sjtu   # 切到上海交大 SJTUG 镜像
+sudo china-config mirror set official  # 退回 Flathub 官方源
+```
+
+`status` 在当前还是官方地址时会把下一步该执行的命令直接打给你，所以切过来之后先跑一次 `status` 就够了。改完跑一次 `flatpak update`，软件中心的目录就跟着走新地址。
+
+生效的地址写在 `/var/lib/flatpak/repo/config` 里，而 `/var` 不归镜像管，`bootc switch`、`bootc upgrade` 都碰不到它：**改一次就定下来**，不会在某次升级之后自己变回去——你之前看到的「点一下镜像源就自动改了」正是这套机制的表象。代价是每台机器都要手工执行一次 `set`。
+
+`set` 只接受 `list` 里的别名，不接受任意 URL，所以 GPG 密钥和 collection-id 不可能被顺手改掉；构建时还会校验每个可选源用的都是 Flathub 官方那把密钥。加一个镜像 = 往 `/usr/share/china-config/remotes.d/` 放一个 `<别名>.flatpakrepo`，程序不用改，条件见 man 手册的「加一个新镜像」。
+
+几点已知边界：SJTUG 是智能缓存，未命中会 302 回源到 Flathub 原站，完全不通原站的网络仍可能有少量请求失败；manifest 里标注 `extra-data` 的文件（NVIDIA 驱动、JetBrains 之类）不经镜像站，仍从作者提供的源站下载；USTC 的 flathub 镜像缺少 `summary.sig`（2026-11 实测 404），flatpak 拿不到可校验的目录，因此没有收进可选源。
+
+没有图形化的切换入口：GNOME 的面板是编译进 control-center 的 C 模块，没有运行时插件位，一次性配置也不适合常驻应用网格。Cloudflare WARP 与其他代理工具不在本镜像当前范围内。
 
 # Community
 

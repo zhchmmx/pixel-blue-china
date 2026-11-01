@@ -1,29 +1,28 @@
 #!/bin/bash
+#
+# Build driver. The actual work lives in build_files/modules/, executed in
+# filename order (the zero-padded numeric prefix is the order), same convention
+# as the pixel-blue base image.
+#
+# Ordering is load-bearing:
+#   00-system-files.sh   copy system_files/ to / (must run first: the
+#                        china-config tool, its mirror data files and the man
+#                        page all come from there, and later modules check them)
+#   10..20               package installs, systemd presets
+#   95-cleanup.sh        trim the dnf cache, last
+#
+# The gaps in the numbering are deliberate: they leave room for the modules this
+# image will grow (proxy tooling), without renumbering what already exists.
+#
+# Modules are standalone bash scripts, each with its own `set -ouex pipefail`,
+# so they can also be run individually while debugging. The Containerfile keeps
+# the whole build in a single RUN layer: the modules share the same container
+# filesystem and dnf cache, and splitting into more RUN steps would only add
+# layers.
 
 set -ouex pipefail
 
-# Copy the contents of system_files/ of the git repo to /
-cp -avf "/ctx/system_files"/. /
-
-### Install packages
-
-# Packages can be installed from any enabled yum repo on the image.
-# RPMfusion repos are available by default in ublue main images
-# List of rpmfusion packages can be found here:
-# https://mirrors.rpmfusion.org/mirrorlist?path=free/fedora/updates/43/x86_64/repoview/index.html&protocol=https&redirect=1
-
-# this installs a package from fedora repos
-dnf5 install -y ibus-rime librime-lua
-
-# Use a COPR Example:
-#
-# dnf5 -y copr enable ublue-os/staging
-# dnf5 -y install package
-# Disable COPRs so they don't end up enabled on the final image:
-# dnf5 -y copr disable ublue-os/staging
-
-#### Example for enabling a System Unit File
-
-# systemctl enable podman.socket
-
-dnf5 clean all
+for module in /ctx/modules/*.sh; do
+  echo "=== running $(basename "$module")"
+  bash "$module"
+done

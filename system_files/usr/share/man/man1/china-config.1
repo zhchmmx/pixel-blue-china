@@ -1,0 +1,351 @@
+.\" china-config 中文手册页。
+.\" 两点约定：放在 /usr/share/man/man1 而不是 zh_CN 子目录，因为这个工具只有
+.\" 中文文档，放 locale 目录会让 LANG=en 的用户查不到；正文每行不超过 24 个汉字，
+.\" 因为 groff 没有中文断行规则，只能拿源文件里的换行当断行点，长行会顶出页宽。
+.TH CHINA-CONFIG 1 "2026-11-01" "Pixel Blue China" "用户命令"
+.\" groff 不懂中文断行，两端对齐会把行距拉得很难看，这里统一左对齐。
+.ad l
+.SH 名称
+china-config \- Flathub 国内镜像源与雾凇拼音的切换工具
+.SH 概要
+.PP
+.B china-config
+mirror
+.BR status " | " list
+.br
+.BR sudo " china-config"
+mirror
+.B set
+.RI < 别名 >
+.br
+.B china-config
+rime
+.BR status " | " install " | " update
+.SH 描述
+.PP
+.B china-config
+是 Pixel Blue China 镜像自带的小工具，
+两组子命令，方向正好相反：
+.TP
+.B mirror
+把系统级 flatpak 里名为
+.I flathub
+的远程源（remote）的地址改成国内镜像站，
+或者改回官方源。
+要 root，写的是系统级
+.IR /var 。
+.TP
+.B rime
+把雾凇拼音（rime-ice）装进你自己的用户目录，
+只装词库，不写你的输入源设置。
+绝不能加 sudo，写的是你的
+.IR ~/.config 。
+.PP
+mirror 改的是
+.RS
+.nf
+/var/lib/flatpak/repo/config
+.fi
+.RE
+即 flatpak 真正读取生效地址的地方，
+而不是
+.RS
+.nf
+/etc/flatpak/remotes.d/
+.fi
+.RE
+里的定义文件。两者的区别见
+.BR "与 bootc 的关系" 。
+.PP
+只读的子命令
+.RB ( status ", " list )
+不需要 root；
+.B set
+要写系统级配置，必须 root。
+.SH mirror 命令
+.TP
+.B mirror status
+显示当前生效的 Flathub 地址，
+并说明它是白名单里的哪一个、
+还是你自己配的自定义源。
+如果当前还是官方地址，
+会直接把下一步该执行的命令打给你。
+这是这个工具的主要入口，
+切到本镜像之后先跑它看一眼就够了。
+.TP
+.B mirror list
+列出全部可选源，
+用
+.B *
+标出当前生效的那个。
+.TP
+.BI "mirror set <别名>"
+切换到指定源。
+别名只能是
+.IR list
+里列出的值，
+.B 不接受任意 URL 参数
+—— 这样就不可能顺手把 GPG 密钥、
+collection-id 一起换掉，
+签名校验对所有可选源都是同一套。
+当前地址已经和目标一致时什么都不做。
+.sp
+系统级还没有
+.I flathub
+这个源时
+（比如这台机器一个 flatpak 应用都没装过），
+改用数据文件新建它，
+标题、图标、密钥一并从文件里读。
+.SH rime 命令
+.PP
+镜像只带引擎（
+.IR ibus-rime ", " librime-lua "、以及本工具需要的 " git ），
+因为 bootc 系统不能自己装系统包。
+词库、方案、输入源都是用户级状态，
+本工具只按你在终端里点下的命令装词库，
+其余一概不替你决定、也不在后台动。
+.TP
+.B rime status
+报告三件事：词库目录
+.RI ( $XDG_CONFIG_HOME /ibus/rime ，
+默认
+.IR ~/.config/ibus/rime )
+现在是没建过、是空的、是个 git 仓库、
+还是有你自己拷进去的配置；
+ibus 的 Rime 引擎组件在不在；GNOME 输入源里有没有 Rime
+（这一项只读，不改）。
+每一项后面给出还差的那一步该怎么做。
+.TP
+.B rime install
+把雾凇拼音浅克隆（
+.BR "git clone --depth 1" ）
+到上面那个目录，约 66M。仓库是
+.IR https://github.com/iDvel/rime-ice 。
+目录里已经有不是 git 仓库的内容时，
+本命令直接退出，不会覆盖你的配置；
+要换过来请自己先
+.B mv
+走备份，或者 clone 到别处再
+.BR cp -a
+过去。
+.TP
+.B rime update
+.BR "git pull --ff-only" 。
+不是 git 仓库、或者不能快进
+（本地有改动、上游改过历史）
+时都会停下来让你自己处理，
+工具不替你合并、不替你 stash。
+词库更新后执行一次
+.B ibus restart
+或在 Rime 托盘菜单里选「重新部署」才会生效。
+.TP
+.B 添加输入源
+词库装好之后，还要自己到桌面里把 Rime 加进输入源
+（设置 → 键盘 → 添加输入法 → 汉语 → Rime），
+再执行一次
+.BR "ibus restart" 。
+本工具只读
+.I org.gnome.desktop.input-sources
+来报告状态，从不写入它：
+.B gsettings set
+对这个键是整表覆盖，
+写坏了会把现有的输入源全冲掉，
+这种风险不该由一个装词库的命令来担。
+.PP
+这一组命令都不要加
+.BR sudo ：
+加了会拒绝执行，因为
+.B sudo
+会把词库和配置写进 root 的目录、并把所有权弄错。
+.PP
+工具不内置任何 GitHub 代理或第三方镜像：
+拉下来的是要在你会话里跑 Lua 代码的配置包，
+不经你确认就换来源不合适。
+GitHub 不通的时候，
+自己下载 zip 解压到词库目录即可。
+个人词频在
+.I *.user.xtab
+里、不在仓库中，更新不会碰；
+自己的改动写在
+.I *.custom.yaml
+（patch 机制）里，上游覆盖回来也不会冲掉。
+.SH 可用的源
+.PP
+可选的源不写死在程序里，
+而是这些 keyfile 格式的数据文件，
+去掉后缀的文件名就是别名：
+.RS
+.nf
+/usr/share/china-config/remotes.d/<别名>.flatpakrepo
+.fi
+.RE
+当前提供两个。
+.TP
+.B sjtu
+上海交通大学 SJTUG 镜像：
+.RS
+.nf
+https://mirror.sjtu.edu.cn/flathub/
+.fi
+.RE
+智能缓存，未命中时 302 回源到 Flathub 原站，
+所以完全不通原站的网络仍可能有少量请求失败。
+.TP
+.B official
+Flathub 官方源，也就是退回默认行为的出口：
+.RS
+.nf
+https://dl.flathub.org/repo/
+.fi
+.RE
+.PP
+其它国内站点没有都放进来。例如 USTC 的 flathub
+镜像只同步了仓库内容，缺少
+.IR summary.sig ：
+截至 2026-11 它是 404，flatpak 拿不到可校验的目录，
+配上去之后
+.B flatpak update
+会失败，所以不如不提供。
+.SH 与 bootc 的关系
+.PP
+本镜像里
+.B 不带
+任何 Flathub 默认源，
+.I /etc/flatpak/remotes.d
+里没有覆盖文件。
+原因是这个镜像的用户都是
+.BR "bootc switch"
+过来的老用户，而 flatpak 对
+.IR remotes.d /
+里的定义文件只做一次「首次应用」：
+名字一旦进了仓库配置里的
+.I core.xa.applied-remotes
+列表，这个文件之后就被无视。
+往
+.I /etc
+塞默认地址，
+对 switch 过来的机器完全空转，
+只对全新部署生效 ——
+结果是两个真相源，
+而且哪边都不是用户自己选的。
+.PP
+删掉默认值、只留一个工具之后：
+.TP
+\(bu
+改一次就定下来。
+.I /var
+不归镜像管，
+.B bootc upgrade
+和
+.B bootc switch
+都不会碰它，
+源地址不会在某次升级后自己变回去。
+.TP
+\(bu
+每台机器要手工执行一次
+.RS
+.nf
+sudo china-config mirror set sjtu
+.fi
+.RE
+这是不替用户做决定的代价。
+.PP
+顺带解释一个常见错觉：
+在软件中心里改镜像源、
+或者
+.I /etc
+里放了覆盖文件，
+看起来都会「自动改回去」，
+正是因为生效的地址在
+.IR /var/lib/flatpak/repo/config ，
+而
+.I /etc
+里那份文件只在第一次被应用。
+.SH 加一个新镜像
+.PP
+往
+.I /usr/share/china-config/remotes.d
+放一个
+.IR <别名>.flatpakrepo
+文件，重新构建镜像即可，程序不用改。
+文件里的 Url、Title、Icon、GPGKey 都会被读到，
+其中 GPGKey 应当与 Flathub 官方那把保持一致
+（镜像站同步的是同一个 ostree 仓库，密钥不该变）。
+.PP
+放文件之前先确认这个站点完整提供 ostree 元数据，
+下面四个都要能取到：
+.RS
+.nf
+<URL>/config
+<URL>/summary.sig
+<URL>/summary.idx
+<URL>/summaries/<条目>
+.fi
+.RE
+.SH 注意
+.TP
+\(bu
+换源只影响后续的安装与更新，
+已经下到本地的包不会重下。
+.TP
+\(bu
+manifest 里标注
+.I extra-data
+的文件
+（NVIDIA 驱动、JetBrains 之类）
+不经镜像站，
+仍然直接从作者提供的源站下载。
+.TP
+\(bu
+源的名字保持
+.IR flathub ，
+不要改名：
+GNOME 软件中心和 Discover 按这个名字识别 Flathub，
+改名或删掉再另加，点安装时官方源会被重新建回来。
+.TP
+\(bu
+切换之后建议跑一次
+.BR "flatpak update" ，
+让软件中心的目录缓存跟上新地址。
+.SH 退出状态
+.TP
+.B 0
+成功。
+两个 status 子命令读到什么状态都返回 0，
+.B mirror set
+在「当前已经是目标源」时也返回 0。
+.TP
+.B 1
+需要 root 却没有 root、rime 子命令被加了 sudo、找不到
+.B flatpak
+或
+.B git
+命令、
+词库目录不是 git 仓库，
+或者
+.BR flatpak / git
+自身执行失败。
+.TP
+.B 2
+用法错误，比如别名不在白名单里、子命令不认识。
+.SH 参见
+.BR flatpak (1),
+.BR flatpak-remote-modify (1),
+.BR flatpak-remotes (1),
+.BR bootc (1),
+.BR git (1),
+.BR gsettings (1)
+.PP
+雾凇拼音上游：
+.RS
+.nf
+https://github.com/iDvel/rime-ice
+.fi
+.RE
+.PP
+项目说明：
+.RS
+.nf
+https://github.com/zhchmmx/pixel-blue-china
+.fi
+.RE

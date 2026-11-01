@@ -1,0 +1,400 @@
+#!/usr/bin/bash
+#
+# china-config —— Pixel Blue China 的国内镜像源与输入法工具。
+#
+# 两组子命令：
+#   mirror  改 Flathub 源（要 root，写的是系统级 /var/lib/flatpak）
+#   rime    装/更新雾凇拼音（绝不能 root，写的是你自己的 ~/.config/ibus/rime）
+#
+# mirror：它只做一件事，把系统级 flathub 这个 remote 的地址改成你想要的那个，并且
+# 这个决定写进 /var/lib/flatpak/repo/config 之后，bootc switch / bootc upgrade 都
+# 不会再动它（镜像管不到 /var）。
+#
+# 镜像里刻意不带任何 Flathub 默认源。原因：这个镜像的用户都是 `bootc switch`
+# 过来的老用户，而 flatpak 只会「首次应用」一次 remotes.d 里的 .flatpakrepo ——
+# 名字一旦进了 repo config 的 core.xa.applied-remotes 列表，之后这个文件就被
+# 无视了。所以往 /etc 塞默认地址对 switch 过来的机器完全空转，却会制造第二个
+# 真相源：全新部署看到的是国内源，老用户看到的还是官方源，而且两边都不是自己
+# 选的。改成这样之后，源这件事只有一个入口，就是本工具。
+#
+# 可切的源不写死在脚本里，而是 /usr/share/china-config/remotes.d/*.flatpakrepo
+# 这些数据文件：去掉后缀的文件名就是别名，Title/Url/Icon/GPGKey 全部从文件里读。
+# 加一个镜像 = 放一个文件进去（前提：它完整提供 ostree 元数据，见 man 手册）。
+#
+# 命令只接受白名单别名，永远不接受 URL 参数 —— 这样就不可能顺手把 GPG 密钥或
+# collection-id 换掉，签名校验逻辑对所有可选源都是同一套。
+
+set -euo pipefail
+
+REMOTE_NAME=flathub
+DATA_DIR=/usr/share/china-config/remotes.d
+
+# 雾凇拼音（rime-ice）与 ibus-rime 的用户目录。Rime 的 user dir 就是这里，
+# librime 启动时会自动「重新部署」一次，把 YAML 编译成二进制词典。
+RIME_DIR=${XDG_CONFIG_HOME:-${HOME}/.config}/ibus/rime
+RIME_REPO=https://github.com/iDvel/rime-ice
+INPUTS_SCHEMA=org.gnome.desktop.input-sources
+
+usage() {
+  cat <<'EOF'
+china-config —— Pixel Blue China 中文适配小工具
+
+Flathub 源：
+  china-config mirror status             查看当前 Flathub 源（只读，不用 root）
+  china-config mirror list               列出本工具管理的源，并标出当前生效的
+  sudo china-config mirror set <别名>     切换 Flathub 源
+
+Rime 输入法（不要用 sudo，全部写在你自己的 ~/.config 里）：
+  china-config rime status               看词库目录和输入源现在是什么状态
+  china-config rime install              把雾凇拼音（rime-ice）装到 ~/.config/ibus/rime
+  china-config rime update               git pull 更新词库
+
+  man china-config                       详细文档
+EOF
+}
+
+die() {
+  printf 'china-config: %s\n' "$1" >&2
+  exit "${2:-1}"
+}
+
+need_flatpak() {
+  command -v flatpak >/dev/null 2>&1 || die "找不到 flatpak 命令，这个工具无法工作。"
+}
+
+# 比较地址时用：忽略结尾的斜杠（官方源带 / ，有些手写的配置不带）。
+normalize_url() {
+  local url=$1
+  while [[ $url == */ ]]; do
+    url=${url%/}
+  done
+  printf '%s\n' "$url"
+}
+
+# 从 .flatpakrepo（keyfile 格式）里取单个键。GPGKey 是多行的，所以整文件读取
+# 没有意义，只按 "键名=" 开头的行取值。
+repo_field() {
+  local file=$1 key=$2
+  awk -v k="$key" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }' "$file"
+}
+
+data_file() {
+  printf '%s/%s.flatpakrepo\n' "$DATA_DIR" "$1"
+}
+
+aliases() {
+  local file
+  for file in "$DATA_DIR"/*.flatpakrepo; do
+    [[ -f $file ]] || continue
+    basename "$file" .flatpakrepo
+  done
+}
+
+# 真正生效的地址在 /var/lib/flatpak/repo/config 里，remotes.d 里那份文件不算。
+current_url() {
+  local scope=$1
+  flatpak remotes --columns=name,url "--$scope" 2>/dev/null |
+    awk -v n="$REMOTE_NAME" '$1 == n { print $2; exit }'
+}
+
+has_remote() {
+  local scope=$1
+  flatpak remotes --columns=name "--$scope" 2>/dev/null | grep -qx -- "$REMOTE_NAME"
+}
+
+# 命中白名单就输出 "别名|标题"，否则返回 1（自定义源）。
+label_for_url() {
+  local target=$1 file url
+  for file in "$DATA_DIR"/*.flatpakrepo; do
+    [[ -f $file ]] || continue
+    url=$(repo_field "$file" Url)
+    if [[ $(normalize_url "$url") == "$target" ]]; then
+      printf '%s|%s\n' "$(basename "$file" .flatpakrepo)" "$(repo_field "$file" Title)"
+      return 0
+    fi
+  done
+  return 1
+}
+
+cmd_status() {
+  need_flatpak
+
+  local url mir title label
+  url=$(current_url system)
+
+  if [[ -z $url ]]; then
+    printf '系统级没有名为 %s 的 Flathub 源。\n\n' "$REMOTE_NAME"
+    if has_remote user; then
+      printf '它在你用户级的配置里：%s\n' "$(current_url user)"
+      printf '这个工具只管系统级，用户级请自己处理：\n  flatpak --user remote-modify %s --url=<地址>\n' "$REMOTE_NAME"
+    else
+      printf '可能这台机器还没装过任何 flatpak 应用。下面这条会顺手把系统级源建起来：\n  sudo china-config mirror set sjtu\n'
+    fi
+    return 0
+  fi
+
+  printf 'Flathub 当前地址：%s\n' "$url"
+  if label=$(label_for_url "$(normalize_url "$url")"); then
+    mir=${label%%|*}
+    title=${label#*|}
+    if [[ $mir == official ]]; then
+      printf '本工具管理的源：%s（%s）—— 目前走的还是官方地址。\n' "$title" "$mir"
+      printf '\n下一步：sudo china-config mirror set sjtu\n'
+    else
+      printf '本工具管理的源：%s（%s）—— 已经是国内镜像。\n' "$title" "$mir"
+    fi
+  else
+    printf '这个地址不在本工具管理的源里，属于你自己配的自定义源，china-config 不会去覆盖它。\n'
+  fi
+
+  printf '\n可切换的源：%s\n' "$(aliases | tr '\n' ' ')"
+  printf '提示：地址写在 /var/lib/flatpak/repo/config，镜像升级（bootc switch / upgrade）改不到它，所以切换是一次性的，不会第二天自己变回去。\n'
+}
+
+cmd_list() {
+  need_flatpak
+
+  local active file url mir
+  active=$(normalize_url "$(current_url system)")
+
+  for file in "$DATA_DIR"/*.flatpakrepo; do
+    [[ -f $file ]] || continue
+    mir=$(basename "$file" .flatpakrepo)
+    url=$(normalize_url "$(repo_field "$file" Url)")
+    if [[ -n $active && $url == "$active" ]]; then
+      printf '* %s (%s)\n' "$mir" "$(repo_field "$file" Title)"
+    else
+      printf '  %s (%s)\n' "$mir" "$(repo_field "$file" Title)"
+    fi
+    printf '    %s\n' "$(repo_field "$file" Url)"
+  done
+  printf '\n* = 当前系统级生效的源。切换：sudo china-config mirror set <别名>\n'
+}
+
+cmd_set() {
+  local mir=$1
+  local file url title icon cur
+
+  file=$(data_file "$mir")
+  [[ -f $file ]] || die "不认识镜像源别名 '$mir'。可选：$(aliases | tr '\n' ' ')" 2
+
+  url=$(repo_field "$file" Url)
+  title=$(repo_field "$file" Title)
+  icon=$(repo_field "$file" Icon)
+  need_flatpak
+
+  cur=$(normalize_url "$(current_url system)")
+  if [[ -n $cur && $cur == $(normalize_url "$url") ]]; then
+    printf '当前已经是 %s：%s，不需要改动。\n' "$mir" "$url"
+    return 0
+  fi
+
+  if [[ $EUID -ne 0 ]]; then
+    printf '这一步要写系统级 flatpak 配置（/var/lib/flatpak），需要 root：\n  sudo china-config mirror set %s\n' "$mir" >&2
+    exit 1
+  fi
+
+  if has_remote system; then
+    # 只改地址和 UI 上显示的标题、图标。GPG 密钥不动：各镜像用的都是 Flathub
+    # 官方那把；collection-id 也不动，镜像站和原站是同一个仓库。
+    flatpak remote-modify --system "$REMOTE_NAME" --url="$url" --title="$title" --icon="$icon"
+  else
+    # 系统级还没有这个源：直接按数据文件建，密钥/标题/图标一并从文件读。
+    flatpak remote-add --system "$REMOTE_NAME" "$file"
+  fi
+
+  printf '已切换到 %s（%s）：%s\n' "$mir" "$title" "$url"
+  printf '接着跑一次 flatpak update，软件中心的目录就会走新地址。\n'
+}
+
+# ---------- rime：雾凇拼音 ----------
+#
+# 这一组只做一件事：把雾凇拼音的词库装进你的 ~/.config/ibus/rime。镜像负责把
+# ibus-rime 引擎和 git 带进 /usr（bootc 上用户自己装不了系统包），装不装预设、用
+# 哪个方案、什么时候更新，都由你在终端里点这一下决定。添加输入源是桌面设置，本
+# 工具只读不写，让你自己在 设置 → 键盘 里加。
+
+rime_guard() {
+  [[ $EUID -ne 0 ]] || die "rime 子命令不要加 sudo：它写的是你自己账号下的 $RIME_DIR。"
+  [[ -n ${HOME:-} ]] || die "HOME 是空的，找不到你的用户目录。"
+}
+
+need_git() {
+  command -v git >/dev/null 2>&1 || die "找不到 git 命令（本镜像应该带上它）。"
+}
+
+# 目录现状：repo（git 仓库）/ other（有内容但不是仓库）/ empty / none
+rime_dir_state() {
+  if [[ -d $RIME_DIR/.git ]]; then
+    printf 'repo'
+  elif [[ -d $RIME_DIR ]] && [[ -n $(ls -A "$RIME_DIR" 2>/dev/null) ]]; then
+    printf 'other'
+  elif [[ -d $RIME_DIR ]]; then
+    printf 'empty'
+  else
+    printf 'none'
+  fi
+}
+
+# 当前的输入源列表，形如 [('xkb', 'us'), ('ibus', 'rime')]
+inputs_current() {
+  gsettings get "$INPUTS_SCHEMA" sources 2>/dev/null
+}
+
+# 比较时把所有空格去掉，别赌 glib 的打印格式。
+has_rime_source() {
+  local compact=${1// /}
+  [[ $compact == *"('ibus','rime')"* ]]
+}
+
+cmd_rime_status() {
+  rime_guard
+
+  local state engine cur
+  state=$(rime_dir_state)
+  printf '词库目录：%s\n' "$RIME_DIR"
+  case $state in
+    repo)
+      local head branch
+      if command -v git >/dev/null 2>&1; then
+        head=$(git -C "$RIME_DIR" log -1 --format='%h %ad' --date=short 2>/dev/null)
+        branch=$(git -C "$RIME_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)
+        printf '已经是一个 git 仓库了（分支 %s，最后一次提交 %s）。\n' "${branch:-未知}" "${head:-未知}"
+        [[ -f $RIME_DIR/rime_ice.schema.yaml ]] ||
+          printf '  注意：目录里没有 rime_ice.schema.yaml，看起来不是雾凇拼音。\n'
+      else
+        printf '已经是一个 git 仓库了（没有 git 命令，读不出提交信息）。\n'
+      fi
+      printf '  更新：china-config rime update\n'
+      ;;
+    other)
+      printf '  目录里已经有你自己在用的配置，而且不是 git 仓库。本工具不会覆盖它，\n'
+      printf '  要更新就得自己动手：备份之后把 %s 下载下来 cp -a 覆盖，\n' "$RIME_REPO"
+      printf '  自己的改动写在 *.custom.yaml（patch 机制）里不会被上游冲掉。\n'
+      ;;
+    empty)
+      printf '  目录是空的，还没装词库。\n'
+      printf '  装雾凇拼音：china-config rime install\n'
+      ;;
+    none)
+      printf '  还没建过。Rime 自带的 luna_pinyin、仓颉这些方案仍然可用，\n'
+      printf '  想用雾凇拼音：china-config rime install\n'
+      ;;
+  esac
+
+  engine=$(find /usr/share/ibus/component -maxdepth 1 -name '*rime*' -print -quit 2>/dev/null || true)
+  if [[ -n $engine ]]; then
+    printf '引擎：已安装（%s）\n' "$engine"
+  else
+    printf '引擎：在 /usr/share/ibus/component 里没看到 rime 的组件文件；打不出中文的话先确认系统里有 ibus-rime。\n'
+  fi
+
+  if command -v gsettings >/dev/null 2>&1 && gsettings list-schemas 2>/dev/null | grep -qx -- "$INPUTS_SCHEMA"; then
+    cur=$(inputs_current)
+    if has_rime_source "${cur:-}"; then
+      printf '输入源：已包含 Rime（%s）\n' "$cur"
+    else
+      printf '输入源：还没有 Rime（%s）\n' "${cur:-未读到}"
+      printf '  加上：设置 → 键盘 → 添加输入法 → 汉语 → Rime（本工具不改你的桌面设置）\n'
+    fi
+  else
+    printf '输入源：这里读不到 GNOME 的 input-sources 设置（不是 GNOME 会话？），请在你的桌面里添加输入法。\n'
+  fi
+}
+
+cmd_rime_install() {
+  rime_guard
+  need_git
+
+  local state
+  state=$(rime_dir_state)
+  case $state in
+    repo)
+      die "$RIME_DIR 已经是一个 git 仓库了，不用重装。要更新：china-config rime update"
+      ;;
+    other)
+      die "$RIME_DIR 里已经有不是 git 仓库的内容，本工具不会覆盖你的配置。想换成雾凇拼音，自己动手最稳妥：先把目录移走备份（mv \"$RIME_DIR\" \"${RIME_DIR}.bak\"），再跑一次 install；或者 clone 到别处再 cp -a 覆盖过去。"
+      ;;
+  esac
+
+  printf '正在从 %s 拉雾凇拼音到 %s …\n' "$RIME_REPO" "$RIME_DIR"
+  mkdir -p "$(dirname "$RIME_DIR")"
+  # --depth 1：只要最新那一份，仓库历史对词库没用，国内拉也省一大截流量。
+  git clone --depth 1 --single-branch "$RIME_REPO" "$RIME_DIR" ||
+    die "git clone 失败。GitHub 不通的话，自己下载 zip 解压到 $RIME_DIR 即可，本工具不做第三方镜像。"
+
+  printf '词库装好了。接下来两步都要你自己动手：\n'
+  printf '  1) 设置 → 键盘 → 添加输入法 → 汉语 → Rime（本工具不改桌面设置）\n'
+  printf '  2) ibus restart                   重启 IBus，首次编译词库要几十秒\n'
+  printf '之后更新词库：china-config rime update\n'
+}
+
+cmd_rime_update() {
+  rime_guard
+  need_git
+
+  [[ $(rime_dir_state) == repo ]] ||
+    die "$RIME_DIR 不是一个 git 仓库，没法用本工具更新（手动下载覆盖即可，自定义改动记得放在 *.custom.yaml 里）。"
+
+  git -C "$RIME_DIR" pull --ff-only ||
+    die "git pull 没能快进：可能是本地有改动，或上游改过历史。请自己看一下 git -C \"$RIME_DIR\" status 再决定，工具不替你处理这些。"
+
+  printf '词库已更新。执行 ibus restart（或在 Rime 托盘菜单里选「重新部署」）生效。\n'
+  printf '个人词频在 *.user.xtab 里、不在仓库中，更新不会碰到；你自己的改动请写在 *.custom.yaml。\n'
+}
+
+main() {
+  local group=${1:-}
+  case $group in
+    -h | --help | help | "")
+      usage
+      ;;
+    mirror)
+      shift
+      case ${1:-} in
+        status | "")
+          cmd_status
+          ;;
+        list)
+          cmd_list
+          ;;
+        set)
+          shift
+          [[ $# -eq 1 ]] || die "用法：china-config mirror set <别名>（可选：$(aliases | tr '\n' ' ')）" 2
+          cmd_set "$1"
+          ;;
+        *)
+          printf 'china-config: 未知子命令 %s\n\n' "${1:-}" >&2
+          usage
+          exit 2
+          ;;
+      esac
+      ;;
+    rime)
+      shift
+      case ${1:-} in
+        status | "")
+          cmd_rime_status
+          ;;
+        install)
+          cmd_rime_install
+          ;;
+        update)
+          cmd_rime_update
+          ;;
+        *)
+          printf 'china-config: 未知子命令 %s\n\n' "${1:-}" >&2
+          usage
+          exit 2
+          ;;
+      esac
+      ;;
+    *)
+      printf 'china-config: 未知命令 %s\n\n' "$group" >&2
+      usage
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"
