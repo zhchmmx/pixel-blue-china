@@ -1,0 +1,230 @@
+#!/usr/bin/bash
+#
+# china-config —— Pixel Blue China 的国内镜像源切换工具。
+#
+# 它只做一件事：把系统级 flathub 这个 remote 的地址改成你想要的那个，并且这个
+# 决定写进 /var/lib/flatpak/repo/config 之后，bootc switch / bootc upgrade 都
+# 不会再动它（镜像管不到 /var）。
+#
+# 镜像里刻意不带任何 Flathub 默认源。原因：这个镜像的用户都是 `bootc switch`
+# 过来的老用户，而 flatpak 只会「首次应用」一次 remotes.d 里的 .flatpakrepo ——
+# 名字一旦进了 repo config 的 core.xa.applied-remotes 列表，之后这个文件就被
+# 无视了。所以往 /etc 塞默认地址对 switch 过来的机器完全空转，却会制造第二个
+# 真相源：全新部署看到的是国内源，老用户看到的还是官方源，而且两边都不是自己
+# 选的。改成这样之后，源这件事只有一个入口，就是本工具。
+#
+# 可切的源不写死在脚本里，而是 /usr/share/china-config/remotes.d/*.flatpakrepo
+# 这些数据文件：去掉后缀的文件名就是别名，Title/Url/Icon/GPGKey 全部从文件里读。
+# 加一个镜像 = 放一个文件进去（前提：它完整提供 ostree 元数据，见 man 手册）。
+#
+# 命令只接受白名单别名，永远不接受 URL 参数 —— 这样就不可能顺手把 GPG 密钥或
+# collection-id 换掉，签名校验逻辑对所有可选源都是同一套。
+
+set -euo pipefail
+
+REMOTE_NAME=flathub
+DATA_DIR=/usr/share/china-config/remotes.d
+
+usage() {
+  cat <<'EOF'
+china-config —— Pixel Blue China 中文适配小工具
+
+用法：
+  china-config mirror status            查看当前 Flathub 源（只读，不用 root）
+  china-config mirror list              列出本工具管理的源，并标出当前生效的
+  sudo china-config mirror set <别名>    切换 Flathub 源
+
+  man china-config                      详细文档
+EOF
+}
+
+die() {
+  printf 'china-config: %s\n' "$1" >&2
+  exit "${2:-1}"
+}
+
+need_flatpak() {
+  command -v flatpak >/dev/null 2>&1 || die "找不到 flatpak 命令，这个工具无法工作。"
+}
+
+# 比较地址时用：忽略结尾的斜杠（官方源带 / ，有些手写的配置不带）。
+normalize_url() {
+  local url=$1
+  while [[ $url == */ ]]; do
+    url=${url%/}
+  done
+  printf '%s\n' "$url"
+}
+
+# 从 .flatpakrepo（keyfile 格式）里取单个键。GPGKey 是多行的，所以整文件读取
+# 没有意义，只按 "键名=" 开头的行取值。
+repo_field() {
+  local file=$1 key=$2
+  awk -v k="$key" 'index($0, k "=") == 1 { print substr($0, length(k) + 2); exit }' "$file"
+}
+
+data_file() {
+  printf '%s/%s.flatpakrepo\n' "$DATA_DIR" "$1"
+}
+
+aliases() {
+  local file
+  for file in "$DATA_DIR"/*.flatpakrepo; do
+    [[ -f $file ]] || continue
+    basename "$file" .flatpakrepo
+  done
+}
+
+# 真正生效的地址在 /var/lib/flatpak/repo/config 里，remotes.d 里那份文件不算。
+current_url() {
+  local scope=$1
+  flatpak remotes --columns=name,url "--$scope" 2>/dev/null |
+    awk -v n="$REMOTE_NAME" '$1 == n { print $2; exit }'
+}
+
+has_remote() {
+  local scope=$1
+  flatpak remotes --columns=name "--$scope" 2>/dev/null | grep -qx -- "$REMOTE_NAME"
+}
+
+# 命中白名单就输出 "别名|标题"，否则返回 1（自定义源）。
+label_for_url() {
+  local target=$1 file url
+  for file in "$DATA_DIR"/*.flatpakrepo; do
+    [[ -f $file ]] || continue
+    url=$(repo_field "$file" Url)
+    if [[ $(normalize_url "$url") == "$target" ]]; then
+      printf '%s|%s\n' "$(basename "$file" .flatpakrepo)" "$(repo_field "$file" Title)"
+      return 0
+    fi
+  done
+  return 1
+}
+
+cmd_status() {
+  need_flatpak
+
+  local url mir title label
+  url=$(current_url system)
+
+  if [[ -z $url ]]; then
+    printf '系统级没有名为 %s 的 Flathub 源。\n\n' "$REMOTE_NAME"
+    if has_remote user; then
+      printf '它在你用户级的配置里：%s\n' "$(current_url user)"
+      printf '这个工具只管系统级，用户级请自己处理：\n  flatpak --user remote-modify %s --url=<地址>\n' "$REMOTE_NAME"
+    else
+      printf '可能这台机器还没装过任何 flatpak 应用。下面这条会顺手把系统级源建起来：\n  sudo china-config mirror set sjtu\n'
+    fi
+    return 0
+  fi
+
+  printf 'Flathub 当前地址：%s\n' "$url"
+  if label=$(label_for_url "$(normalize_url "$url")"); then
+    mir=${label%%|*}
+    title=${label#*|}
+    if [[ $mir == official ]]; then
+      printf '本工具管理的源：%s（%s）—— 目前走的还是官方地址。\n' "$title" "$mir"
+      printf '\n下一步：sudo china-config mirror set sjtu\n'
+    else
+      printf '本工具管理的源：%s（%s）—— 已经是国内镜像。\n' "$title" "$mir"
+    fi
+  else
+    printf '这个地址不在本工具管理的源里，属于你自己配的自定义源，china-config 不会去覆盖它。\n'
+  fi
+
+  printf '\n可切换的源：%s\n' "$(aliases | tr '\n' ' ')"
+  printf '提示：地址写在 /var/lib/flatpak/repo/config，镜像升级（bootc switch / upgrade）改不到它，所以切换是一次性的，不会第二天自己变回去。\n'
+}
+
+cmd_list() {
+  need_flatpak
+
+  local active file url mir
+  active=$(normalize_url "$(current_url system)")
+
+  for file in "$DATA_DIR"/*.flatpakrepo; do
+    [[ -f $file ]] || continue
+    mir=$(basename "$file" .flatpakrepo)
+    url=$(normalize_url "$(repo_field "$file" Url)")
+    if [[ -n $active && $url == "$active" ]]; then
+      printf '* %s (%s)\n' "$mir" "$(repo_field "$file" Title)"
+    else
+      printf '  %s (%s)\n' "$mir" "$(repo_field "$file" Title)"
+    fi
+    printf '    %s\n' "$(repo_field "$file" Url)"
+  done
+  printf '\n* = 当前系统级生效的源。切换：sudo china-config mirror set <别名>\n'
+}
+
+cmd_set() {
+  local mir=$1
+  local file url title icon cur
+
+  file=$(data_file "$mir")
+  [[ -f $file ]] || die "不认识镜像源别名 '$mir'。可选：$(aliases | tr '\n' ' ')" 2
+
+  url=$(repo_field "$file" Url)
+  title=$(repo_field "$file" Title)
+  icon=$(repo_field "$file" Icon)
+  need_flatpak
+
+  cur=$(normalize_url "$(current_url system)")
+  if [[ -n $cur && $cur == $(normalize_url "$url") ]]; then
+    printf '当前已经是 %s：%s，不需要改动。\n' "$mir" "$url"
+    return 0
+  fi
+
+  if [[ $EUID -ne 0 ]]; then
+    printf '这一步要写系统级 flatpak 配置（/var/lib/flatpak），需要 root：\n  sudo china-config mirror set %s\n' "$mir" >&2
+    exit 1
+  fi
+
+  if has_remote system; then
+    # 只改地址和 UI 上显示的标题、图标。GPG 密钥不动：各镜像用的都是 Flathub
+    # 官方那把；collection-id 也不动，镜像站和原站是同一个仓库。
+    flatpak remote-modify --system "$REMOTE_NAME" --url="$url" --title="$title" --icon="$icon"
+  else
+    # 系统级还没有这个源：直接按数据文件建，密钥/标题/图标一并从文件读。
+    flatpak remote-add --system "$REMOTE_NAME" "$file"
+  fi
+
+  printf '已切换到 %s（%s）：%s\n' "$mir" "$title" "$url"
+  printf '接着跑一次 flatpak update，软件中心的目录就会走新地址。\n'
+}
+
+main() {
+  local group=${1:-}
+  case $group in
+    -h | --help | help | "")
+      usage
+      ;;
+    mirror)
+      shift
+      case ${1:-} in
+        status | "")
+          cmd_status
+          ;;
+        list)
+          cmd_list
+          ;;
+        set)
+          shift
+          [[ $# -eq 1 ]] || die "用法：china-config mirror set <别名>（可选：$(aliases | tr '\n' ' ')）" 2
+          cmd_set "$1"
+          ;;
+        *)
+          printf 'china-config: 未知子命令 %s\n\n' "${1:-}" >&2
+          usage
+          exit 2
+          ;;
+      esac
+      ;;
+    *)
+      printf 'china-config: 未知命令 %s\n\n' "$group" >&2
+      usage
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"

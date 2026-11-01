@@ -2,15 +2,15 @@
 
 This repository builds a custom [bootc](https://github.com/bootc-dev/bootc) image on top of [Pixel Blue](https://github.com/zhchmmx/pixel-blue). It follows the [Universal Blue image template](https://github.com/ublue-os/image-template), which is the recommended way to make customizations to any Universal Blue image.
 
-Currently the only modification is the Chinese input method: `ibus-rime` and `librime-lua` are installed by `build_files/build.sh`.
+Currently there are two modifications: the Chinese input method engine (`ibus-rime` and `librime-lua`, installed by `build_files/build.sh` because a bootc system cannot install system packages itself), and `china-config`, a small CLI for pointing Flathub at a Chinese mirror. See 中文适配 below.
 
 The resulting image is published as `ghcr.io/zhchmmx/pixel-blue-china`.
 
 # 中文适配 (Pixel Blue China)
 
-本镜像在 [pixel-blue](https://github.com/zhchmmx/pixel-blue)（GNOME / Fedora Silverblue 基座）之上只做两件事：预装 bootc 上装不了的输入法引擎，以及把 Flathub 指向国内镜像。
+本镜像在 [pixel-blue](https://github.com/zhchmmx/pixel-blue)（GNOME / Fedora Silverblue 基座）之上只加两类东西：bootc 上用户自己装不出来的系统包（Rime 引擎），以及一个改 Flathub 源的小工具 `china-config`。
 
-边界画在这里：**系统级默认值由镜像带，用户目录和用户偏好一概不代做。** 所以镜像不会往 `~/.config/ibus/rime` 写任何东西，也不会改你的输入源设置；词库、方案、更新时机都是你的决定。
+边界画在这里：**镜像管 `/usr`，你的状态归你。** 用户目录、输入源设置、装过哪些 flatpak 应用、用哪个镜像站，镜像一概不代做，也不设默认值。
 
 ## 中文输入法：只带引擎，配置归你
 
@@ -33,21 +33,26 @@ bootc 系统不能自己装系统包，用户在装机后 `dnf5 install ibus-rim
 
    目录里已经有你在用的配置，就 clone 到别处再 `cp -a` 覆盖过去。之后更新是 `cd ~/.config/ibus/rime && git pull` 加一次重新部署；自己的改动写在 `*.custom.yaml`（patch 机制）里，上游覆盖回来不会冲掉，`*.user.xtab` 那类个人词频不在仓库里，更新也不碰。
 
-## Flathub 国内镜像
+## Flathub 源：镜像里没有默认值，改源用 china-config
 
-`/etc/flatpak/remotes.d/flathub.flatpakrepo` 覆盖基座里的官方地址，默认指向上海交通大学 SJTUG 镜像（`https://mirror.sjtu.edu.cn/flathub/`），GPG 密钥与上游一致，签名校验逻辑不变。
-
-remote 的名字仍然叫 `flathub`：GNOME 软件中心和 Discover 按这个名字识别 Flathub，改名或删掉再另加一个源，点安装时会把官方源重新建回来。
+镜像里 `/etc/flatpak/remotes.d/` 是空的，Flathub 指向哪儿由你自己决定一次。原因是这个镜像的用户全是 `bootc switch` 过来的，而 flatpak 对 `remotes.d` 里的定义文件只做一次「首次应用」：名字一旦进了仓库配置里的 `core.xa.applied-remotes`，那个文件之后就被无视。所以往 `/etc` 塞默认地址对切过来的机器完全空转，只会让少数全新部署看到另一个结果，两边都不是用户自己选的。详细推导在 `man china-config`。
 
 ```bash
-flatpak remotes -d                 # 查看当前地址
-sudo flatpak remote-modify flathub --url=https://mirrors.ustc.edu.cn/flathub   # 换中科大
-sudo flatpak remote-modify flathub --url=https://dl.flathub.org/repo --title=Flathub  # 换回官方
+china-config mirror status          # 看现在真正生效的地址（只读，不用 root）
+china-config mirror list            # 看本工具管理的源，* 标出当前生效的
+sudo china-config mirror set sjtu   # 切到上海交大 SJTUG 镜像
+sudo china-config mirror set official  # 退回 Flathub 官方源
 ```
 
-几点边界，来自镜像站自己的说明：SJTUG 是智能缓存，未命中会 302 回源到 Flathub 原站，所以完全不通原站时仍可能有少量请求失败；manifest 里标注 `extra-data` 的文件（NVIDIA 驱动、JetBrains 等）不经镜像站，直接从源站下载；已经装过系统的老部署，`/var/lib/flatpak` 里记录的 remote 归属不会因此改变，`bootc switch` 到本镜像后由 `/etc` 三方合并决定是否采纳新地址。
+`status` 在当前还是官方地址时会把下一步该执行的命令直接打给你，所以切过来之后先跑一次 `status` 就够了。改完跑一次 `flatpak update`，软件中心的目录就跟着走新地址。
 
-尚未提供图形化的镜像源切换入口，改源就是上面那条命令。Cloudflare WARP 与其他代理工具不在本镜像当前范围内。
+生效的地址写在 `/var/lib/flatpak/repo/config` 里，而 `/var` 不归镜像管，`bootc switch`、`bootc upgrade` 都碰不到它：**改一次就定下来**，不会在某次升级之后自己变回去——你之前看到的「点一下镜像源就自动改了」正是这套机制的表象。代价是每台机器都要手工执行一次 `set`。
+
+`set` 只接受 `list` 里的别名，不接受任意 URL，所以 GPG 密钥和 collection-id 不可能被顺手改掉；构建时还会校验每个可选源用的都是 Flathub 官方那把密钥。加一个镜像 = 往 `/usr/share/china-config/remotes.d/` 放一个 `<别名>.flatpakrepo`，程序不用改，条件见 man 手册的「加一个新镜像」。
+
+几点已知边界：SJTUG 是智能缓存，未命中会 302 回源到 Flathub 原站，完全不通原站的网络仍可能有少量请求失败；manifest 里标注 `extra-data` 的文件（NVIDIA 驱动、JetBrains 之类）不经镜像站，仍从作者提供的源站下载；USTC 的 flathub 镜像缺少 `summary.sig`（2026-11 实测 404），flatpak 拿不到可校验的目录，因此没有收进可选源。
+
+没有图形化的切换入口：GNOME 的面板是编译进 control-center 的 C 模块，没有运行时插件位，一次性配置也不适合常驻应用网格。Cloudflare WARP 与其他代理工具不在本镜像当前范围内。
 
 # Community
 

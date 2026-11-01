@@ -5,9 +5,9 @@
 # as the pixel-blue base image.
 #
 # Ordering is load-bearing:
-#   00-system-files.sh   copy system_files/ to / (must run first: the Flatpak
-#                        remote comes from there, and later modules may need
-#                        files it places)
+#   00-system-files.sh   copy system_files/ to / (must run first: the
+#                        china-config tool, its mirror data files and the man
+#                        page all come from there, and later modules check them)
 #   10..20               package installs, systemd presets
 #   95-cleanup.sh        trim the dnf cache, last
 #
