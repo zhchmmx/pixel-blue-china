@@ -9,6 +9,8 @@
 #                        china-config tool, its mirror data files and the man
 #                        page all come from there, and later modules check them)
 #   10..20               package installs, systemd presets
+#   30-user-services.sh  systemctl --global enable for user units; after 00,
+#                        because the unit files it enables ship in system_files/
 #   95-cleanup.sh        trim the dnf cache, last
 #
 # The gaps in the numbering are deliberate: they leave room for the modules this

@@ -1,0 +1,10 @@
+[Unit]
+Description=Copy Chinese fonts into the user font directory for Flatpak sandboxes (Pixel Blue China)
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/china-config-fonts.sh
+
+[Install]
+WantedBy=default.target
