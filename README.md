@@ -4,18 +4,30 @@ This repository is meant to be a template for building your own custom [bootc](h
 
 # 中文适配 (Pixel Blue China)
 
-本镜像在 [pixel-blue](https://github.com/zhchmmx/pixel-blue)（GNOME / Fedora Silverblue 基座）之上加了两项中国大陆相关的适配。构建产物按 `build_files/modules/` 的数字顺序执行，改动都在 `system_files/` 里可以看到落点。
+本镜像在 [pixel-blue](https://github.com/zhchmmx/pixel-blue)（GNOME / Fedora Silverblue 基座）之上只做两件事：预装 bootc 上装不了的输入法引擎，以及把 Flathub 指向国内镜像。
 
-## 中文输入法：Rime + 雾凇拼音
+边界画在这里：**系统级默认值由镜像带，用户目录和用户偏好一概不代做。** 所以镜像不会往 `~/.config/ibus/rime` 写任何东西，也不会改你的输入源设置；词库、方案、更新时机都是你的决定。
 
-`ibus-rime`、`librime-lua` 由镜像提供，雾凇拼音（[rime-ice](https://github.com/iDvel/rime-ice)）在构建时按固定 tag + SHA256 下载，只读地放在 `/usr/share/pixel-blue-cn/rime/`。
+## 中文输入法：只带引擎，配置归你
 
-- 默认输入源已经是 `[('xkb','us'), ('ibus','rime')]`，不用再进 设置 → 键盘 手动添加。切换快捷键沿用 GNOME 默认的 `Super+Space`。
-- 首次登录时 `pixel-blue-cn-rime-seed.service` 会把预设复制到 `~/.config/ibus/rime`。复制用 `cp -Rn`，**不会覆盖你已经改过的文件**；新增文件的时间戳是当时，librime 因此会重新编译词库，第一次切到 Rime 会停几秒。
-- 已经自己配过 `default.yaml` 的账号会保留自己的方案列表。想让出厂预设重新生效：移走 `~/.config/ibus/rime`，删掉 `~/.config/pixel-blue-cn/rime-seed.stamp`，重新登录。
-- 想关掉这个默认输入源：`gsettings reset org.gnome.desktop.input-sources sources`（gsettings 默认值只影响从没改过输入源的账号）。
-- 更新预设：改 `build_files/modules/15-rime-ice.sh` 里的 `RIME_ICE_REF` 和 `RIME_ICE_SHA256`（两者要一起改，tag 列表见上游仓库）。
-- 个人词典、同步码、用户词库不会进镜像。
+bootc 系统不能自己装系统包，用户在装机后 `dnf5 install ibus-rime` 是做不到的，所以镜像替你把这一步做掉：`ibus-rime` + `librime-lua`（后者是社区预设几乎都要、而 Fedora 不会随 `ibus-rime` 一起装的 Lua 模块）。
+
+引擎之外还差两小步，都在你自己手里：
+
+1. 添加输入源：设置 → 键盘 → 添加输入法 → 汉语 → Rime。等价的命令是
+
+   ```bash
+   gsettings set org.gnome.desktop.input-sources sources "[('xkb', 'us'), ('ibus', 'rime')]"
+   ```
+
+2. 词库与方案（可选）。不配也能直接用，Rime 自带 `luna_pinyin`、仓颉这些方案。想用雾凇拼音（[rime-ice](https://github.com/iDvel/rime-ice)），一个干净的目录可以这样起手：
+
+   ```bash
+   git clone https://github.com/iDvel/rime-ice ~/.config/ibus/rime
+   ibus restart        # 或在 Rime 托盘菜单里选「部署」，首次编译词库要几十秒
+   ```
+
+   目录里已经有你在用的配置，就 clone 到别处再 `cp -a` 覆盖过去。之后更新是 `cd ~/.config/ibus/rime && git pull` 加一次重新部署；自己的改动写在 `*.custom.yaml`（patch 机制）里，上游覆盖回来不会冲掉，`*.user.xtab` 那类个人词频不在仓库里，更新也不碰。
 
 ## Flathub 国内镜像
 

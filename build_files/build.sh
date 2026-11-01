@@ -6,13 +6,13 @@
 #
 # Ordering is load-bearing:
 #   00-system-files.sh   copy system_files/ to / (must run first: the Flatpak
-#                        remote, the gschema override and the user unit all come
-#                        from there)
-#   10..20               package installs, the rime-ice payload, systemd presets
-#   50-schemas.sh        glib-compile-schemas, after every operation that can
-#                        add schema files or overrides
-#   55-user-services.sh  systemctl --global enable, after the unit files exist
+#                        remote comes from there, and later modules may need
+#                        files it places)
+#   10..20               package installs, systemd presets
 #   95-cleanup.sh        trim the dnf cache, last
+#
+# The gaps in the numbering are deliberate: they leave room for the modules this
+# image will grow (proxy tooling), without renumbering what already exists.
 #
 # Modules are standalone bash scripts, each with its own `set -ouex pipefail`,
 # so they can also be run individually while debugging. The Containerfile keeps
