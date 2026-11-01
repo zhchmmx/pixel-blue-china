@@ -2,13 +2,13 @@
 
 This repository builds a custom [bootc](https://github.com/bootc-dev/bootc) image on top of [Pixel Blue](https://github.com/zhchmmx/pixel-blue). It follows the [Universal Blue image template](https://github.com/ublue-os/image-template), which is the recommended way to make customizations to any Universal Blue image.
 
-Currently there are two modifications: the Chinese input method engine (`ibus-rime`, `librime-lua` and `git`, installed by `build_files/build.sh` because a bootc system cannot install system packages itself), and `china-config`, a small CLI that points Flathub at a Chinese mirror and installs the rime-ice dictionaries into your own `~/.config`. See 中文适配 below.
+Currently there are three modifications: the Chinese input method engine (`ibus-rime`, `librime-lua` and `git`, installed by `build_files/build.sh` because a bootc system cannot install system packages itself), `fuse-libs` so upstream-published `.AppImage` files still run on this image, and `china-config`, a small CLI that points Flathub at a Chinese mirror and installs the rime-ice dictionaries into your own `~/.config`. See 中文适配 below.
 
 The resulting image is published as `ghcr.io/zhchmmx/pixel-blue-china`.
 
 # 中文适配 (Pixel Blue China)
 
-本镜像在 [pixel-blue](https://github.com/zhchmmx/pixel-blue)（GNOME / Fedora Silverblue 基座）之上只加两类东西：bootc 上用户自己装不出来的系统包（Rime 引擎、git），以及一个中文适配小工具 `china-config`。
+本镜像在 [pixel-blue](https://github.com/zhchmmx/pixel-blue)（GNOME / Fedora Silverblue 基座）之上只加两类东西：bootc 上用户自己装不出来的系统包（Rime 引擎、git、libfuse2），以及一个中文适配小工具 `china-config`。
 
 边界画在这里：**镜像管 `/usr`，你的状态归你。** 用户目录、输入源设置、装没装词库、装过哪些 flatpak 应用、用哪个镜像站，镜像一概不代做，也不设默认值 —— `china-config` 提供入口，动作由你在终端里点。
 
@@ -53,7 +53,19 @@ sudo china-config mirror set official  # 退回 Flathub 官方源
 
 几点已知边界：SJTUG 是智能缓存，未命中会 302 回源到 Flathub 原站，完全不通原站的网络仍可能有少量请求失败；manifest 里标注 `extra-data` 的文件（NVIDIA 驱动、JetBrains 之类）不经镜像站，仍从作者提供的源站下载；USTC 的 flathub 镜像缺少 `summary.sig`（2026-11 实测 404），flatpak 拿不到可校验的目录，因此没有收进可选源。
 
-没有图形化的切换入口：GNOME 的面板是编译进 control-center 的 C 模块，没有运行时插件位，一次性配置也不适合常驻应用网格。Cloudflare WARP 与其他代理工具不在本镜像当前范围内。
+没有图形化的切换入口：GNOME 的面板是编译进 control-center 的 C 模块，没有运行时插件位，一次性配置也不适合常驻应用网格。Cloudflare WARP 与各类代理客户端仍然不预装；镜像在这件事上只做了一件事——把 AppImage 跑起来所需的那个库带上，见下一节。
+
+## AppImage 支持：镜像里多了一个 libfuse2
+
+Fedora 有意把 fuse(2) 从 Atomic 桌面镜像里移掉了（ostree sig issue #50），而 AppImage 的 runtime 挂载自己时要 `libfuse.so.2`，结果就是上游发布的 `.AppImage` 在这类系统上直接起不来。
+
+这对代理工具有实际影响：图形化管理 Clash 订阅目前只有客户端这一条路，而它们给 Linux 的形态是 deb、rpm、AppImage。前两种在这类系统上只能靠客户端 `rpm-ostree` 分层装进来，那是 bootc 下的弱路径（切镜像时不保证带过去），而且 FlClash 的包会把主体塞进 `/opt` —— 本镜像的 `/opt` 还是指向可写 `/var/opt` 的符号链接，bootc 部署时那里的内容可能被清掉。**AppImage 是唯一一个不用改镜像、跑起来的又正好是上游那一个可校验产物的形态**。把 AppImage 解包再拼起来跑，运行对象就成了我们自己组装的东西，校验和更新都更差。所以这里补一个库，而不是让用户改用法。
+
+边界照旧：**镜像没有装任何代理客户端，没有代理内核，没有服务，也没有 WARP**，只多了 `fuse-libs` 这一个包。AppImage 跑起来之后要不要开 TUN、订阅给谁、节点怎么选，全是用户自己的决定。
+
+这是个逆着上游方向的取舍（libfuse2 是老代码基，一些 Atomic 衍生镜像出于安全考虑明确不带它），所以构建里直接断言 `/usr/lib64/libfuse.so.2` 存在：Fedora 现在已经另有一个独立的 `fuse2` 源码包，将来提供者的名字变了就构建失败，而不是静默产出一个跑不了 AppImage 的镜像。
+
+不认同这个取舍的话回退很容易：`rpm-ostree override remove fuse-libs` 之后，AppImage 还能用 `APPIMAGE_EXTRACT_AND_RUN=1 ./FlClash.AppImage` 跑，不需要 FUSE，代价是每次启动都要解压一遍。反过来说，只在机器上 `rpm-ostree install fuse-libs` 分层不是好办法——bootc 下客户端分层是弱路径，切镜像时不保证带过去，所以这个包放在镜像里比放在机器上更稳。
 
 # Community
 
