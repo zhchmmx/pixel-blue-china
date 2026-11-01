@@ -16,24 +16,21 @@ The resulting image is published as `ghcr.io/zhchmmx/pixel-blue-china`.
 
 bootc 系统不能自己装系统包，所以镜像替你把引擎这一步做掉：`ibus-rime` + `librime-lua`（后者是社区预设几乎都要、而 Fedora 不会随 `ibus-rime` 一起装的 Lua 模块），外加 `git`（`china-config rime` 靠它拉词库，bootc 上事后装不上）。
 
-引擎之外还差两小步，工具把每条压成一行（都不要加 sudo，写的是你自己的 `~/.config`）：
+引擎之外只差一步工具能做（不要加 sudo，它写的是你自己的 `~/.config`）：
 
 ```bash
 china-config rime install   # 浅克隆雾凇拼音（rime-ice）到 ~/.config/ibus/rime，约 66M
-china-config rime enable    # 把 Rime 追加进 GNOME 输入源，保留你已有的布局
-ibus restart                # 首次编译词库要几十秒
 ```
 
-`china-config rime status` 会报告目录、引擎、输入源三件事各是什么状态、还差哪一步；`china-config rime update` 就是 `git pull --ff-only`。
+剩下两步刻意留给你自己：在桌面里 设置 → 键盘 → 添加输入法 → 汉语 → Rime，然后 `ibus restart`（首次编译词库要几十秒）。`china-config rime status` 会报告目录、引擎、输入源三件事各是什么状态、还差哪一步；`china-config rime update` 就是 `git pull --ff-only`。
 
-手工做同样的事也行，下面两条是等价命令：
+不想用工具的话，装词库等价于这一条：
 
 ```bash
-gsettings set org.gnome.desktop.input-sources sources "[('xkb', 'us'), ('ibus', 'rime')]"
 git clone https://github.com/iDvel/rime-ice ~/.config/ibus/rime
 ```
 
-注意那条 `gsettings` 是**整表覆盖**，会把你已有的其它输入源冲掉，`rime enable` 是追加——先 `gsettings get` 看一眼再自己敲的话，别漏了原有的项。
+添输入源不做成命令，是因为 `gsettings set org.gnome.desktop.input-sources sources ...` 对这个名字是**整表覆盖**，写漏一项就把手里已有的输入源冲掉了，一个装词库的命令不该担这个风险。`status` 只用 `gsettings get` 读一下当前列表，从不写入。
 
 几条刻意的边界：目录里已经有不是 git 仓库的内容时，`install` 直接拒绝动它，要你自己备份或 `cp -a` 覆盖；`update` 认不出仓库也一样退出，不替你处理冲突。工具不内置任何第三方 GitHub 代理（拉下来的是要在你会话里跑的 Lua 代码，不经确认换源不合适），GitHub 不通就自己下载 zip 解压到 `~/.config/ibus/rime`。词库更新后的自定义改动写在 `*.custom.yaml`（patch 机制）里，上游覆盖回来不会冲掉，`*.user.xtab` 那类个人词频不在仓库里，更新也不碰。
 

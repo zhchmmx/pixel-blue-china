@@ -4,7 +4,7 @@
 #
 # 两组子命令：
 #   mirror  改 Flathub 源（要 root，写的是系统级 /var/lib/flatpak）
-#   rime    装/更新雾凇拼音、把 Rime 加进输入源（绝不能 root，写的是你自己的 ~）
+#   rime    装/更新雾凇拼音（绝不能 root，写的是你自己的 ~/.config/ibus/rime）
 #
 # mirror：它只做一件事，把系统级 flathub 这个 remote 的地址改成你想要的那个，并且
 # 这个决定写进 /var/lib/flatpak/repo/config 之后，bootc switch / bootc upgrade 都
@@ -48,7 +48,6 @@ Rime 输入法（不要用 sudo，全部写在你自己的 ~/.config 里）：
   china-config rime status               看词库目录和输入源现在是什么状态
   china-config rime install              把雾凇拼音（rime-ice）装到 ~/.config/ibus/rime
   china-config rime update               git pull 更新词库
-  china-config rime enable               把 Rime 追加进 GNOME 输入源（不动你已有的）
 
   man china-config                       详细文档
 EOF
@@ -210,9 +209,10 @@ cmd_set() {
 
 # ---------- rime：雾凇拼音 ----------
 #
-# 这一组全是用户级操作：词库在 ~/.config/ibus/rime，输入源在 gsettings 里。镜像
-# 只负责把 ibus-rime 引擎和 git 带进 /usr（bootc 上用户自己装不了系统包），装不
-# 装预设、用哪个方案、什么时候更新，都由你在终端里点这一下决定。
+# 这一组只做一件事：把雾凇拼音的词库装进你的 ~/.config/ibus/rime。镜像负责把
+# ibus-rime 引擎和 git 带进 /usr（bootc 上用户自己装不了系统包），装不装预设、用
+# 哪个方案、什么时候更新，都由你在终端里点这一下决定。添加输入源是桌面设置，本
+# 工具只读不写，让你自己在 设置 → 键盘 里加。
 
 rime_guard() {
   [[ $EUID -ne 0 ]] || die "rime 子命令不要加 sudo：它写的是你自己账号下的 $RIME_DIR。"
@@ -245,11 +245,6 @@ inputs_current() {
 has_rime_source() {
   local compact=${1// /}
   [[ $compact == *"('ibus','rime')"* ]]
-}
-
-has_xkb_source() {
-  local compact=${1// /}
-  [[ $compact == *"'xkb'"* ]]
 }
 
 cmd_rime_status() {
@@ -300,7 +295,7 @@ cmd_rime_status() {
       printf '输入源：已包含 Rime（%s）\n' "$cur"
     else
       printf '输入源：还没有 Rime（%s）\n' "${cur:-未读到}"
-      printf '  加上：china-config rime enable，或者 设置 → 键盘 → 添加输入法 → 汉语 → Rime\n'
+      printf '  加上：设置 → 键盘 → 添加输入法 → 汉语 → Rime（本工具不改你的桌面设置）\n'
     fi
   else
     printf '输入源：这里读不到 GNOME 的 input-sources 设置（不是 GNOME 会话？），请在你的桌面里添加输入法。\n'
@@ -328,12 +323,10 @@ cmd_rime_install() {
   git clone --depth 1 --single-branch "$RIME_REPO" "$RIME_DIR" ||
     die "git clone 失败。GitHub 不通的话，自己下载 zip 解压到 $RIME_DIR 即可，本工具不做第三方镜像。"
 
-  printf '词库装好了。还差两步：\n'
-  if ! { command -v gsettings >/dev/null 2>&1 && has_rime_source "$(inputs_current)"; }; then
-    printf '  1) china-config rime enable    把 Rime 加进输入源\n'
-  fi
+  printf '词库装好了。接下来两步都要你自己动手：\n'
+  printf '  1) 设置 → 键盘 → 添加输入法 → 汉语 → Rime（本工具不改桌面设置）\n'
   printf '  2) ibus restart                   重启 IBus，首次编译词库要几十秒\n'
-  printf '之后更新：china-config rime update\n'
+  printf '之后更新词库：china-config rime update\n'
 }
 
 cmd_rime_update() {
@@ -348,40 +341,6 @@ cmd_rime_update() {
 
   printf '词库已更新。执行 ibus restart（或在 Rime 托盘菜单里选「重新部署」）生效。\n'
   printf '个人词频在 *.user.xtab 里、不在仓库中，更新不会碰到；你自己的改动请写在 *.custom.yaml。\n'
-}
-
-cmd_rime_enable() {
-  rime_guard
-
-  command -v gsettings >/dev/null 2>&1 || die "找不到 gsettings 命令。"
-  gsettings list-schemas 2>/dev/null | grep -qx -- "$INPUTS_SCHEMA" ||
-    die "这台机器上没有 GNOME 的 $INPUTS_SCHEMA 设置（可能不是 GNOME 会话）。请在你的桌面设置里添加输入法：汉语 → Rime。"
-
-  local cur body new
-  cur=$(inputs_current)
-  # 空数组时 glib 会带上类型注解，打印成 `@a(ss) []`，先把注解剥掉。
-  [[ ${cur:-} == @* ]] && cur=${cur#* }
-  [[ ${cur:-} == \[* ]] || die "读到的输入源格式不认识，不动你的设置：${cur:-空}"
-  if has_rime_source "$cur"; then
-    printf '输入源里已经有 Rime，不需要改动：%s\n' "$cur"
-    return 0
-  fi
-
-  # 只做追加：把你已有的布局和其它引擎原样留着。
-  body=${cur#\[}
-  body=${body%\]}
-  if [[ -z ${body// /} ]]; then
-    new="[('ibus', 'rime')]"
-  else
-    new="[$body, ('ibus', 'rime')]"
-  fi
-
-  gsettings set "$INPUTS_SCHEMA" sources "$new" || die "写入输入源失败，你的设置没有改变。"
-  printf '已把 Rime 追加到输入源。\n  之前：%s\n  现在：%s\n' "$cur" "$(inputs_current)"
-  if ! has_xkb_source "$new"; then
-    printf '提醒：列表里没有 xkb 键盘布局，只挂 Rime 一般也能用，但想切英文最好再补一个「英语(美国)」。\n'
-  fi
-  printf '接着执行 ibus restart（或注销重新登录）生效，首次编译词库要几十秒。\n'
 }
 
 main() {
@@ -422,9 +381,6 @@ main() {
           ;;
         update)
           cmd_rime_update
-          ;;
-        enable)
-          cmd_rime_enable
           ;;
         *)
           printf 'china-config: 未知子命令 %s\n\n' "${1:-}" >&2

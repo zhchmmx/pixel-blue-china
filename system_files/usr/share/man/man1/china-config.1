@@ -20,7 +20,7 @@ mirror
 .br
 .B china-config
 rime
-.BR status " | " install " | " update " | " enable
+.BR status " | " install " | " update
 .SH 描述
 .PP
 .B china-config
@@ -37,7 +37,7 @@ rime
 .TP
 .B rime
 把雾凇拼音（rime-ice）装进你自己的用户目录，
-并把 Rime 追加进输入源。
+只装词库，不写你的输入源设置。
 绝不能加 sudo，写的是你的
 .IR ~/.config 。
 .PP
@@ -101,9 +101,9 @@ collection-id 一起换掉，
 镜像只带引擎（
 .IR ibus-rime ", " librime-lua "、以及本工具需要的 " git ），
 因为 bootc 系统不能自己装系统包。
-词库、方案、输入源是用户级状态，
-全部落在你自己的目录里，
-本工具不替你决定、也不在后台动它们。
+词库、方案、输入源都是用户级状态，
+本工具只按你在终端里点下的命令装词库，
+其余一概不替你决定、也不在后台动。
 .TP
 .B rime status
 报告三件事：词库目录
@@ -112,8 +112,9 @@ collection-id 一起换掉，
 .IR ~/.config/ibus/rime )
 现在是没建过、是空的、是个 git 仓库、
 还是有你自己拷进去的配置；
-ibus 的 Rime 引擎组件在不在；GNOME 输入源里有没有 Rime。
-每一项后面给出还差的那一步命令。
+ibus 的 Rime 引擎组件在不在；GNOME 输入源里有没有 Rime
+（这一项只读，不改）。
+每一项后面给出还差的那一步该怎么做。
 .TP
 .B rime install
 把雾凇拼音浅克隆（
@@ -138,21 +139,18 @@ ibus 的 Rime 引擎组件在不在；GNOME 输入源里有没有 Rime。
 .B ibus restart
 或在 Rime 托盘菜单里选「重新部署」才会生效。
 .TP
-.B rime enable
-往 GNOME 的
+.B 添加输入源
+词库装好之后，还要自己到桌面里把 Rime 加进输入源
+（设置 → 键盘 → 添加输入法 → 汉语 → Rime），
+再执行一次
+.BR "ibus restart" 。
+本工具只读
 .I org.gnome.desktop.input-sources
-的
-.I sources
-里
-.B 追加
-一个
-.IR "('ibus', 'rime')" ，
-你已有的布局和其它引擎原样保留、顺序不动。
-注意手动执行 README 里那条
+来报告状态，从不写入它：
 .B gsettings set
-是整表覆盖，会把你现有的输入源冲掉；
-.B rime enable
-只做追加，重复执行是幂等的。
+对这个键是整表覆盖，
+写坏了会把现有的输入源全冲掉，
+这种风险不该由一个装词库的命令来担。
 .PP
 这一组命令都不要加
 .BR sudo ：
@@ -312,15 +310,17 @@ GNOME 软件中心和 Discover 按这个名字识别 Flathub，
 .SH 退出状态
 .TP
 .B 0
-成功，包括「当前已经是目标源」
-「输入源里已经有 Rime」这类不需要改动的情况。
+成功。
+两个 status 子命令读到什么状态都返回 0，
+.B mirror set
+在「当前已经是目标源」时也返回 0。
 .TP
 .B 1
 需要 root 却没有 root、rime 子命令被加了 sudo、找不到
 .B flatpak
 或
 .B git
-命令、非 GNOME 会话读不到输入源设置、
+命令、
 词库目录不是 git 仓库，
 或者
 .BR flatpak / git
