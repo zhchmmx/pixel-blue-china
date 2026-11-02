@@ -49,8 +49,9 @@ warp-optip
 安装或卸载 Cloudflare WARP endpoint 优选工具
 .BR warp-optip 。
 要 root；镜像已烘好上游脚本和第三方二进制，
-安装时不联网下载任何东西。
-本命令只是入口，参数原样透传给上游脚本。
+install 默认接上预下载的二进制、不联网下载。
+本命令只是入口：默认项可以被你手动传的同名选项覆盖，
+其余参数原样透传给上游脚本。
 .PP
 mirror 改的是
 .RS
@@ -202,18 +203,18 @@ GitHub 不通的时候，
 由你在终端里点这一下决定。
 .TP
 .BI "sudo china-config warp-optip install"
-执行上游 install.sh，并接上预下载的二进制
-（等价于加了
-.BR "--no-download --wgcf-bin --warp-bin" ），
-安装过程不联网下载任何东西。
+执行上游 install.sh，默认注入
+.BR --no-download " 加" --wgcf-bin / --warp-bin
+指到 vendor/ 里预下载的二进制，安装过程不联网下载任何东西。
 本镜像只适配 Pixel 6，vendor 里只有 amd64 产物。
-首次安装会注册一个 wgcf 账号，
-这一步要能访问 Cloudflare API，与下载无关。
-额外参数原样透传给上游，比如
+这三个选项你手动传任何一个时，该项以你传的为准、包装不重复注入；
+其余参数一律原样透传，比如
 .B --dry-run
 先预览、
 .B --autoconnect
 顺带设自动连接。
+首次安装会注册一个 wgcf 账号，
+这一步要能访问 Cloudflare API，与下载无关。
 程序装到
 .I /usr/local
 （bootc 上即可写的

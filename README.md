@@ -76,7 +76,7 @@ sudo china-config warp-optip install      # 上游 install.sh，二进制用镜�
 sudo china-config warp-optip uninstall    # 上游 uninstall.sh，可加 --purge
 ```
 
-包装脚本只做一件事：参数全部透传，root、`nmcli`、`wg` 这些检查都由上游脚本自己做、报自己的错，china-config 不重复设门槛，也不另设 status 子命令（装好之后 `sudo warp-optip status` 看状态）。
+包装脚本只做一件事：不带参数直接跑时，默认注入 `--no-download` 和 `--wgcf-bin` / `--warp-bin`（指到 vendor/ 的预下载二进制）；这三个选项你手动传了任何一个，该项就以你传的为准，其余参数一律原样透传。root、`nmcli`、`wg` 这些检查都由上游脚本自己做、报自己的错，china-config 不重复设门槛，也不另设 status 子命令（装好之后 `sudo warp-optip status` 看状态）。
 
 装出去的东西全在可变层：程序进 `/usr/local`（bootc 上即可写的 `/var/usrlocal`），配置进 `/etc/warp-optip.conf`，账号和状态进 `/var/lib/warp-optip/`，NetworkManager 默认新建一个独立的 `warp-optip` 连接、不动现有 `wgcf-profile`——`bootc upgrade` 都碰不到它们。激活与否也归你：`nmcli connection up warp-optip`。
 
