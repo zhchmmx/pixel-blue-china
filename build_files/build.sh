@@ -11,6 +11,9 @@
 #   10..20               package installs, systemd presets
 #   30-user-services.sh  systemctl --global enable for user units; after 00,
 #                        because the unit files it enables ship in system_files/
+#   40-warp-optip.sh     clone warp-optip and pre-download its binaries into
+#                        /usr/libexec/warp-optip; after 10, because it needs
+#                        git, which that module installs
 #   95-cleanup.sh        trim the dnf cache, last
 #
 # The gaps in the numbering are deliberate: they leave room for the modules this

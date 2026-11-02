@@ -21,11 +21,15 @@ mirror
 .B china-config
 rime
 .BR status " | " install " | " update
+.br
+.BR sudo " china-config"
+warp-optip
+.BR install " | " uninstall
 .SH 描述
 .PP
 .B china-config
 是 Pixel Blue China 镜像自带的小工具，
-两组子命令，方向正好相反：
+三组子命令，方向各不相同：
 .TP
 .B mirror
 把系统级 flatpak 里名为
@@ -40,6 +44,13 @@ rime
 只装词库，不写你的输入源设置。
 绝不能加 sudo，写的是你的
 .IR ~/.config 。
+.TP
+.B warp-optip
+安装或卸载 Cloudflare WARP endpoint 优选工具
+.BR warp-optip 。
+要 root；镜像已烘好上游脚本和第三方二进制，
+安装时不联网下载任何东西。
+本命令只是入口，参数原样透传给上游脚本。
 .PP
 mirror 改的是
 .RS
@@ -169,6 +180,83 @@ GitHub 不通的时候，
 自己的改动写在
 .I *.custom.yaml
 （patch 机制）里，上游覆盖回来也不会冲掉。
+.SH warp-optip 命令
+.PP
+.B warp-optip
+是 Cloudflare WARP endpoint 的自动优选工具
+（NetworkManager 原生 WireGuard，pre-up 阶段扫描并换 endpoint）。
+镜像在构建时把上游仓库最新 main 克隆到
+.RS
+.nf
+/usr/libexec/warp-optip/
+.fi
+.RE
+并把安装所需的两个第三方二进制提前下好放进
+.RS
+.nf
+/usr/libexec/warp-optip/vendor/
+.fi
+.RE
+（wgcf 取 GitHub 最新 release，warp 扫描器来自 Misaka-blog/warp-script）。
+安装、注册、开连接都是系统状态，镜像一概不代做，
+由你在终端里点这一下决定。
+.TP
+.BI "sudo china-config warp-optip install"
+执行上游 install.sh，并接上预下载的二进制
+（等价于加了
+.BR "--no-download --wgcf-bin --warp-bin" ），
+安装过程不联网下载任何东西。
+本镜像只适配 Pixel 6，vendor 里只有 amd64 产物。
+首次安装会注册一个 wgcf 账号，
+这一步要能访问 Cloudflare API，与下载无关。
+额外参数原样透传给上游，比如
+.B --dry-run
+先预览、
+.B --autoconnect
+顺带设自动连接。
+程序装到
+.I /usr/local
+（bootc 上即可写的
+.IR /var/usrlocal ），
+配置在
+.IR /etc/warp-optip.conf ，
+账号与状态在
+.IR /var/lib/warp-optip ，
+NetworkManager 连接默认新建一个独立的
+.IR warp-optip ，
+都不在镜像管的地方，
+.B bootc upgrade
+不会冲掉。
+装完之后的激活、断开、改 endpoint 策略都归
+.BR nmcli (1)
+和你自己：
+.RS
+.nf
+nmcli connection up warp-optip
+sudo warp-optip status
+sudo journalctl -u warp-optip -f
+.fi
+.RE
+.TP
+.BI "sudo china-config warp-optip uninstall"
+执行上游 uninstall.sh，参数同样原样透传
+（比如
+.B --purge
+连状态、账号、备份一起删，
+.B --keep-connection
+保留 NetworkManager 连接）。
+.PP
+上游脚本要求 root 和
+.BR nmcli "、" wg
+这些命令，检查由它自己来做、报错也由它自己报；
+本工具也不另设
+.B status
+子命令，装好之后用上游的
+.B "sudo warp-optip status"
+看状态。
+镜像跟随上游最新版本，接口对不上时会在全新构建的
+冒烟测试里失败，不会静默产出坏镜像；
+已经发出去的镜像里装的是什么提交，看那次构建的日志。
 .SH 可用的源
 .PP
 可选的源不写死在程序里，
@@ -328,18 +416,28 @@ GNOME 软件中心和 Discover 按这个名字识别 Flathub，
 .TP
 .B 2
 用法错误，比如别名不在白名单里、子命令不认识。
+.B warp-optip
+两个子命令的退出码由上游脚本决定。
 .SH 参见
 .BR flatpak (1),
 .BR flatpak-remote-modify (1),
 .BR flatpak-remotes (1),
 .BR bootc (1),
 .BR git (1),
-.BR gsettings (1)
+.BR gsettings (1),
+.BR nmcli (8)
 .PP
 雾凇拼音上游：
 .RS
 .nf
 https://github.com/iDvel/rime-ice
+.fi
+.RE
+.PP
+warp-optip 上游：
+.RS
+.nf
+https://github.com/zhchmmx/warp-optip
 .fi
 .RE
 .PP
