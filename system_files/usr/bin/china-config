@@ -1,10 +1,12 @@
 #!/usr/bin/bash
 #
-# china-config —— Pixel Blue China 的国内镜像源与输入法工具。
+# china-config —— Pixel Blue China 的国内镜像源、输入法与 WARP 工具。
 #
-# 两组子命令：
-#   mirror  改 Flathub 源（要 root，写的是系统级 /var/lib/flatpak）
-#   rime    装/更新雾凇拼音（绝不能 root，写的是你自己的 ~/.config/ibus/rime）
+# 三组子命令：
+#   mirror      改 Flathub 源（要 root，写的是系统级 /var/lib/flatpak）
+#   rime        装/更新雾凇拼音（绝不能 root，写的是你自己的 ~/.config/ibus/rime）
+#   warp-optip  安装/卸载 Cloudflare WARP endpoint 优选工具（要 root，
+#               镜像已烘好上游脚本与二进制，包装脚本在 /usr/libexec/）
 #
 # mirror：它只做一件事，把系统级 flathub 这个 remote 的地址改成你想要的那个，并且
 # 这个决定写进 /var/lib/flatpak/repo/config 之后，bootc switch / bootc upgrade 都
@@ -48,6 +50,10 @@ Rime 输入法（不要用 sudo，全部写在你自己的 ~/.config 里）：
   china-config rime status               看词库目录和输入源现在是什么状态
   china-config rime install              把雾凇拼音（rime-ice）装到 ~/.config/ibus/rime
   china-config rime update               git pull 更新词库
+
+Cloudflare WARP endpoint 优选（要 sudo，参数全部透传给上游脚本）：
+  sudo china-config warp-optip install   安装 warp-optip（二进制已随镜像预下载）
+  sudo china-config warp-optip uninstall 卸载（可加 --purge 连状态一起删）
 
   man china-config                       详细文档
 EOF
@@ -381,6 +387,26 @@ main() {
           ;;
         update)
           cmd_rime_update
+          ;;
+        *)
+          printf 'china-config: 未知子命令 %s\n\n' "${1:-}" >&2
+          usage
+          exit 2
+          ;;
+      esac
+      ;;
+    warp-optip)
+      # 纯入口：包装脚本在 /usr/libexec/，参数原样透传，成败与退出码都以上游
+      # 脚本自己的判断为准（root、依赖检查都在那边做）。
+      shift
+      case ${1:-} in
+        install)
+          shift
+          exec /usr/libexec/china-config-warp-optip-install.sh "$@"
+          ;;
+        uninstall)
+          shift
+          exec /usr/libexec/china-config-warp-optip-uninstall.sh "$@"
           ;;
         *)
           printf 'china-config: 未知子命令 %s\n\n' "${1:-}" >&2
