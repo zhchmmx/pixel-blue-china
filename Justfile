@@ -6,7 +6,10 @@ export repo_organization := env_var("REPO_ORGANIZATION")
 export image_desc := env_var("IMAGE_DESC")
 export image_keywords := env_var("IMAGE_KEYWORDS")
 export image_logo_url := env_var("IMAGE_LOGO_URL")
-export default_tag := env_var("DEFAULT_TAG")
+# The channel this branch builds and publishes, resolved from the branch name by
+# channel.sh (main -> latest, testing -> testing). It is both the base image tag
+# and the tag we publish, so every branch carries the same files.
+export default_tag := `bash channel.sh`
 export bib_image := env_var("BIB_IMAGE")
 
 alias build-vm := build-qcow2
@@ -81,6 +84,10 @@ sudoif command *args:
 #   $target_image - The tag you want to apply to the image (default: $image_name).
 #   $tag - The tag for the image (default: $default_tag).
 #
+# The base image follows the branch, not $tag: `just build` passes the channel
+# resolved by channel.sh as the BASE_TAG build argument (main -> latest,
+# testing -> testing), so the same files build either channel.
+#
 # The script sets the version label to <UTC date>.<build number> (for example
 # 20261101.42). In CI that build number is the GitHub Actions run number; local
 # builds fall back to BUILD_NUMBER or the commit count. The version carries no
@@ -127,7 +134,11 @@ build $target_image=image_name $tag=default_tag:
     LABELS+=("--label" "org.opencontainers.image.vendor={{ repo_organization }}")
 
     # This actually builds the image!
-    PODMAN_BUILD_ARGS=("${LABELS[@]}" --pull=newer --tag "${target_image}:${tag}" --file Containerfile)
+    #
+    # BASE_TAG is the channel of the base image, not the tag of the image we
+    # produce: it comes from the branch (see channel.sh), so `just build myimage
+    # mytag` still builds on the channel's base image.
+    PODMAN_BUILD_ARGS=("${LABELS[@]}" --build-arg "BASE_TAG={{ default_tag }}" --pull=newer --tag "${target_image}:${tag}" --file Containerfile)
 
     podman build "${PODMAN_BUILD_ARGS[@]}" .
 
@@ -243,11 +254,11 @@ ostree-rechunk $target_image=image_name $tag=default_tag:
 
 # Generate Default Tag
 [group('Utility')]
-generate-default-tag $tag=default_tag:
+generate-default-tag:
     #!/usr/bin/env bash
     set -eoux pipefail
 
-    echo "${tag}"
+    echo "{{ default_tag }}"
 
 # Generate Tags
 [group('Utility')]

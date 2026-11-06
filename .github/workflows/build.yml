@@ -4,11 +4,13 @@ on:
   pull_request:
     branches:
       - main
+      - testing
   schedule:
-    - cron: '05 10 * * *'  # 10:05am UTC everyday
+    - cron: '05 10 * * *'  # 10:05am UTC everyday; scheduled runs use the default branch (latest)
   push:
     branches:
       - main
+      - testing
     paths-ignore:
       - '**/README.md'
   workflow_dispatch:
@@ -17,7 +19,7 @@ env:
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"  # do not edit
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}-${{ inputs.brand_name}}-${{ inputs.stream_name }}
+  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -53,12 +55,24 @@ jobs:
 
           echo "IMAGE_NAME=${IMAGE_NAME}" >> $GITHUB_ENV
 
-      - name: Default Tag
-        id: gen-default-tag
+      - name: Resolve channel
+        id: resolve-channel
         run: |
+          # The branch decides the channel (channel.sh: main -> latest, testing ->
+          # testing), and channel.sh fails on any other branch, so an accidental
+          # workflow_dispatch can never publish over latest.
           DEFAULT_TAG=$(just generate-default-tag)
-
           echo "DEFAULT_TAG=${DEFAULT_TAG}" >> $GITHUB_ENV
+
+          # Pull requests build to prove they still build, but never publish or
+          # sign; everything else on a channel branch does.
+          PUSH_IMAGE=false
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            PUSH_IMAGE=true
+          fi
+          echo "PUSH_IMAGE=${PUSH_IMAGE}" >> $GITHUB_ENV
+
+          echo "Building the '${DEFAULT_TAG}' channel (push: ${PUSH_IMAGE})"
 
       - name: Resolve image version
         id: resolve-version
@@ -123,18 +137,20 @@ jobs:
             "${DEFAULT_TAG}" \
             "${ALIAS_TAGS}"
 
-      # These `if` statements are so that pull requests for your custom images do not make it publish any packages under your name without you knowing
-      # They also check if the runner is on the default branch so that things like the merge queue (if you enable it), are going to work
+      # `PUSH_IMAGE` is false for pull requests, so a PR never publishes under your
+      # name without you knowing; pushes to a channel branch and manual runs do.
+      # The branch allowlist lives in `on:` above, and channel.sh rejects anything
+      # that is not main or testing, so there is no second list to keep in sync.
       - name: Login to GitHub Container Registry
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: env.PUSH_IMAGE == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push To GHCR
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: env.PUSH_IMAGE == 'true'
         id: push-image
         env:
           ALIAS_TAGS: ${{ steps.gen-build-tags.outputs.alias_tags }}
@@ -154,14 +170,14 @@ jobs:
       # to consume. For more details, review the image signing section of the README.
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: env.PUSH_IMAGE == 'true'
         with:
           # be careful when upgrading major versions
           cosign-release: 'v3.1.2'
 
       - name: Sign container image
         id: sign-image
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: env.PUSH_IMAGE == 'true'
         env:
           COSIGN_EXPERIMENTAL: false
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}

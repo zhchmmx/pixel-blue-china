@@ -1,10 +1,17 @@
+# Channel of the base image. `just build` resolves it from the branch (see
+# channel.sh: main -> latest, testing -> testing) and passes it in, so this file
+# is identical on every branch. It has to be declared before the first FROM to
+# be usable in a FROM at all; the default keeps a bare `podman build .` on the
+# stable channel.
+ARG BASE_TAG=latest
+
 # Allow build scripts to be referenced without being copied into the final image
 FROM scratch AS ctx
 COPY build_files /
 COPY system_files /system_files
 
 # Base Image
-FROM ghcr.io/zhchmmx/pixel-blue:latest
+FROM ghcr.io/zhchmmx/pixel-blue:${BASE_TAG}
 
 ### [IM]MUTABLE /opt
 ## Some bootable images, like Fedora, have /opt symlinked to /var/opt, in order to
