@@ -82,6 +82,26 @@ sudo china-config warp-optip uninstall    # 上游 uninstall.sh，可加 --purge
 
 这个镜像只适配 Pixel 6 这一款设备，所以构建里不做架构自适应、不装 wireguard-tools（`wg` 在基座里按存在算），上游仓库也跟随最新版本不 pin：接口对不上会在全新构建的冒烟测试里直接失败，不会静默产出坏镜像；某个已发布镜像里烘的是哪个提交，看那次构建的日志。
 
+# Testing channel (测试通道)
+
+两条分支的内容**完全相同**，通道由分支名决定，映射只写在 `channel.sh` 一处（`just` 用它算 `default_tag`，`Containerfile` 把同一个值当 `BASE_TAG` 收下）：
+
+| 分支 | 基础镜像 | 发布为 |
+| --- | --- | --- |
+| `main` | `ghcr.io/zhchmmx/pixel-blue:latest` | `ghcr.io/zhchmmx/pixel-blue-china:latest` |
+| `testing` | `ghcr.io/zhchmmx/pixel-blue:testing` | `ghcr.io/zhchmmx/pixel-blue-china:testing` |
+
+`pixel-blue-china:testing` 就是「Pixel Blue 的测试版 + 本仓库的中文适配」，所以还没进上游 `latest` 的改动可以在中文环境里先试：
+
+```bash
+sudo bootc switch ghcr.io/zhchmmx/pixel-blue-china:testing   # 试上游测试版
+sudo bootc switch ghcr.io/zhchmmx/pixel-blue-china:latest    # 切回稳定版
+```
+
+触发条件是 `testing` 分支有推送，或者在 Actions 里选 `testing` 分支手动 Run workflow —— 上游自己的 testing 构建不会自动触发这里；想把上游新烘进去的内容拉进来，推一次 `testing` 或手动跑一次即可。两条通道互不覆盖：`latest` 只由 `main` 发布，`testing` 只由 `testing` 发布，PR 只构建、不推送也不签名；推到其他分支不会有事，因为 `channel.sh` 在 CI 里认不出分支就直接失败，误 dispatch 顶不掉 `latest`。
+
+分支内容相同意味着把 `testing` 追平 `main` 不产生任何文件差异（`git merge main`）：通道差异全在分支名里，不在代码里。
+
 # Community
 
 If you have questions about this template after following the instructions, try the following spaces:
@@ -160,7 +180,7 @@ gh secret set SIGNING_SECRET < cosign.key
 
 ### Step 2b: Base Image
 
-This repository derives from `ghcr.io/zhchmmx/pixel-blue:latest`, set on the `FROM` line of the `Containerfile`. To derive from a different image instead, change that line; any Universal Blue image or a Fedora/CentOS bootc image works, for example:
+This repository derives from `ghcr.io/zhchmmx/pixel-blue`, with the tag coming from the branch: `main` builds on `:latest` and the `testing` branch on `:testing`. The tag is resolved by `channel.sh` and passed to the `FROM` line of the `Containerfile` as the `BASE_TAG` build argument, so both branches carry identical files (see [Testing channel](#testing-channel-测试通道)). To derive from a different image instead, change that `FROM` line; any Universal Blue image or a Fedora/CentOS bootc image works, for example:
 
 <details>
     <summary>Base Images</summary>
@@ -187,7 +207,7 @@ The names are already set in `image-template.env`: `IMAGE_NAME=pixel-blue-china`
 
 `IMAGE_NAME` must keep matching the GitHub repository name: `build.yml` pushes the image named in `image-template.env`, while `build-disk.yml` pulls `${{ github.event.repository.name }}`, so renaming one without the other breaks the disk build.
 
-The same file also carries the OCI and ArtifactHub metadata (`IMAGE_DESC`, `IMAGE_KEYWORDS`, `IMAGE_LOGO_URL`, `DEFAULT_TAG`, `BIB_IMAGE`), which is written into the image as labels by `just build` and stamped again after rechunking by `just ostree-rechunk`.
+The same file also carries the OCI and ArtifactHub metadata (`IMAGE_DESC`, `IMAGE_KEYWORDS`, `IMAGE_LOGO_URL`, `BIB_IMAGE`), which is written into the image as labels by `just build` and stamped again after rechunking by `just ostree-rechunk`. It deliberately carries no tag: the channel comes from the branch, see [Testing channel](#testing-channel-测试通道).
 
 ## Step 3: Switch to This Image
 
@@ -199,6 +219,7 @@ To stay on a specific build instead of the moving tag, use its version tag (see 
 ```bash
 sudo bootc switch ghcr.io/zhchmmx/pixel-blue-china:20261101.42
 ```
+To try the upstream testing channel on top of the same Chinese adaptations, switch to `:testing` instead (see [Testing channel](#testing-channel-测试通道)).
 This should queue your image for the next reboot, which you can do immediately after the command finishes. See the following section for an explanation of the important parts of the template for customization.
 
 # Repository Contents
@@ -266,11 +287,11 @@ Linting:
 
 ## Environment Variables
 
-These are all sourced from the `image-template.env` file.
+These are all sourced from the `image-template.env` file, except `default_tag`, which is derived from the branch.
 
 - `image_name`: The name of the image (`pixel-blue-china`).
 - `repo_organization`: The GitHub user or organisation the image is published under (`zhchmmx`).
-- `default_tag`: The default tag for the image (default: "latest").
+- `default_tag`: The channel of the current branch (`latest` on `main`, `testing` on the `testing` branch), resolved from the branch by `channel.sh` rather than set in this file.
 - `bib_image`: The Bootc Image Builder (BIB) image (default: "quay.io/centos-bootc/bootc-image-builder:latest").
 - `image_desc`, `image_keywords`, `image_logo_url`: OCI and ArtifactHub metadata written as image labels.
 
@@ -278,7 +299,7 @@ These are all sourced from the `image-template.env` file.
 
 The image version is `<UTC date>.<build number>`, for example `20261101.42`. In CI the build number is the GitHub Actions run number (`build.yml` exports `BUILD_NUMBER` and `IMAGE_VERSION`); local builds fall back to a `BUILD_NUMBER` you set yourself, then to the commit count (`git rev-list --count HEAD`). The version never carries a branch name or commit hash — the commit is recorded separately in the `org.opencontainers.image.revision` label.
 
-`just generate-build-tags` publishes two tags: that version (a pin you can freeze a specific build to) and the moving channel tag (`latest`).
+`just generate-build-tags` publishes two tags: that version (a pin you can freeze a specific build to) and the moving channel tag of the branch (`latest` on `main`, `testing` on the `testing` branch).
 
 Both `just build` and `just ostree-rechunk` write the labels, because `rpm-ostree compose build-chunked-oci` re-exports the image without the config labels it was built with; without the second stamp the pushed image would arrive at GHCR with no metadata at all.
 
